@@ -25,7 +25,31 @@ export function toPosix(p: string): string {
   return p.split(path.sep).join("/");
 }
 
-async function walk(root: string, dir: string, acc: string[]): Promise<void> {
+// Optional per-repo config at <root>/.leanctx.json:
+//   { "ignoreDirs": ["fixtures"], "extensions": [".astro"], "exclude": ["generated/"] }
+interface LeanctxConfig {
+  ignoreDirs: Set<string>;
+  extensions: Set<string>;
+  exclude: string[]; // substring match against repo-relative posix path
+}
+
+async function loadConfig(root: string): Promise<LeanctxConfig> {
+  const ignoreDirs = new Set(IGNORE_DIRS);
+  const extensions = new Set(CODE_EXT);
+  const exclude: string[] = [];
+  try {
+    const raw = await fs.readFile(path.join(root, ".leanctx.json"), "utf8");
+    const cfg = JSON.parse(raw);
+    for (const d of cfg.ignoreDirs ?? []) ignoreDirs.add(String(d));
+    for (const e of cfg.extensions ?? []) extensions.add(String(e).toLowerCase());
+    for (const x of cfg.exclude ?? []) exclude.push(toPosix(String(x)));
+  } catch {
+    /* no config, use defaults */
+  }
+  return { ignoreDirs, extensions, exclude };
+}
+
+async function walk(root: string, dir: string, acc: string[], cfg: LeanctxConfig): Promise<void> {
   let entries: import("node:fs").Dirent[];
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });
@@ -33,15 +57,15 @@ async function walk(root: string, dir: string, acc: string[]): Promise<void> {
     return;
   }
   for (const e of entries) {
-    if (e.name.startsWith(".") && e.name !== ".env.example") {
-      if (IGNORE_DIRS.has(e.name)) continue;
-    }
     const full = path.join(dir, e.name);
     if (e.isDirectory()) {
-      if (IGNORE_DIRS.has(e.name)) continue;
-      await walk(root, full, acc);
+      if (cfg.ignoreDirs.has(e.name)) continue;
+      await walk(root, full, acc, cfg);
     } else if (e.isFile()) {
-      if (CODE_EXT.has(path.extname(e.name).toLowerCase())) acc.push(full);
+      if (!cfg.extensions.has(path.extname(e.name).toLowerCase())) continue;
+      const rel = toPosix(path.relative(root, full));
+      if (cfg.exclude.some((x) => rel.includes(x))) continue;
+      acc.push(full);
     }
   }
 }
@@ -57,8 +81,9 @@ export interface IndexResult {
 export async function buildOrRefresh(root: string, force = false): Promise<IndexResult> {
   const index = force ? { version: 1 as const, builtAt: "", files: {} } : await loadIndex(root);
 
+  const cfg = await loadConfig(root);
   const files: string[] = [];
-  await walk(root, root, files);
+  await walk(root, root, files, cfg);
 
   const present = new Set<string>();
   let parsed = 0;
