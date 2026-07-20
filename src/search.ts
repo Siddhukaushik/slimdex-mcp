@@ -24,9 +24,11 @@ export async function searchFiles(
   root: string,
   files: string[], // repo-relative posix paths
   pattern: string,
-  opts: { regex?: boolean; ignoreCase?: boolean; maxMatches?: number; highlight?: boolean } = {}
-): Promise<Match[]> {
+  opts: { regex?: boolean; ignoreCase?: boolean; maxMatches?: number; offset?: number; highlight?: boolean } = {}
+): Promise<{ matches: Match[]; total: number }> {
   const max = opts.maxMatches ?? 200;
+  const offset = Math.max(0, opts.offset ?? 0);
+  const limit = offset + max; // collect enough to satisfy the offset window
   let re: RegExp;
   try {
     re = opts.regex
@@ -38,7 +40,7 @@ export async function searchFiles(
 
   const out: Match[] = [];
   for (const rel of files) {
-    if (out.length >= max) break;
+    if (out.length >= limit) break;
     let source: string;
     try {
       source = await fs.readFile(path.join(root, rel), "utf8");
@@ -46,7 +48,7 @@ export async function searchFiles(
       continue;
     }
     const lines = source.split(/\r?\n/);
-    for (let i = 0; i < lines.length && out.length < max; i++) {
+    for (let i = 0; i < lines.length && out.length < limit; i++) {
       const line = lines[i];
       re.lastIndex = 0;
       const m = re.exec(line);
@@ -58,7 +60,9 @@ export async function searchFiles(
       }
     }
   }
-  return out;
+  // `total` is a lower bound: we stop scanning once the offset window is full,
+  // so it reflects "at least this many" rather than an exhaustive count.
+  return { matches: out.slice(offset), total: out.length };
 }
 
 export function formatMatches(matches: Match[]): string {

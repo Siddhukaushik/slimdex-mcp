@@ -8,13 +8,38 @@ model's context, an agent asks leanctx for exactly what it needs:
 |------|-----------------|------------------|
 | `index_repo` | Builds/refreshes a persistent symbol + import index | Reused across sessions; only changed files re-parse |
 | `outline_file` | Declarations of one file with line numbers | A map, not the body — hundreds of tokens vs thousands |
+| `get_file_skeleton` | Signatures with bodies elided, nesting preserved | A 2,000-line file becomes a ~50-line map |
 | `read_lines` | One line range | Read the 20 lines you need, not the 800-line file |
-| `search_code` | `path:line:col` + the matching line (+ caret highlight) | No file dumps; jump straight to the spot |
+| `get_symbol_context` | Just a function/class body ±2 lines | ~95% saved vs reading the whole file for one symbol |
+| `search_code` | `path:line:col` + the matching line (+ caret highlight) | No file dumps; `limit`/`offset` pagination |
 | `find_definition` | Definition site(s) of a symbol as `path:line:col` | Go-to-definition without loading files |
-| `find_references` | Whole-word textual references as `path:line:col` | Locations only |
+| `find_references` | References as `path:line:col` **+ enclosing function** | Lightweight call-hierarchy; locations only |
+| `get_context` | **One call**: definition + signature + callers + imports + dependents | Replaces ~5 tool calls with one lean brief |
 | `repo_map` | Dir-level file/line/symbol counts | Orient in one small response |
-| `dep_graph` | `imports` / `dependents` / a Mermaid diagram | Understand structure without reading imports by hand |
+| `dep_graph` | `imports` / `dependents` / a Mermaid diagram | Graph notation compresses relationships far better than JSON |
+| `batch` | Runs several calls in one request | Cuts per-call MCP protocol overhead |
 | `memory_save/search/list/delete` | Durable notes in `.leanctx/memory.json` | Persistent memory across restarts |
+
+### Recommended agent flow (max token savings)
+
+`get_context("Foo")` first — it usually answers "what is this, who calls it, what
+does it depend on" in a single response. Drop to `get_symbol_context` for one
+body, `get_file_skeleton` for a file's shape, and `read_lines` only when you need
+exact source. Use `batch` to bundle several lookups. Every search tool takes
+`limit` (default 20) and `offset`.
+
+### Config: `<root>/.leanctx.json` (optional)
+
+```json
+{
+  "ignoreDirs": ["fixtures", "snapshots"],
+  "extensions": [".astro", ".vue"],
+  "exclude": ["generated/", "legacy/vendor"]
+}
+```
+
+Merged on top of the built-in ignore list (`node_modules`, `dist`, `.venv`, …),
+so vendor/build dirs never blow up your context.
 
 ### How the token saving actually works
 
@@ -33,6 +58,22 @@ it's honest — no code is sent to any third party, everything runs locally.
 - For LSP-grade precision you'd swap the `symbols.ts` extractor for tree-sitter
   or a real language server — the tool surface would stay identical. That's a
   deliberate upgrade slot, not shipped here.
+
+### Deliberately NOT built (and why)
+
+Several popular "token-saving" ideas were evaluated and rejected because they
+don't actually work under MCP's execution model:
+
+- **Symbol-ID dictionaries (`S42` → path)** — MCP has no client-side expansion
+  layer, so the model just receives an opaque token it must spend another call
+  to resolve. Net negative.
+- **Token-budget managers / cost estimators** — `chars/4` estimates are
+  unreliable across tokenizers; auto-compressing on a bad estimate silently
+  drops data the model needed.
+- **Delta / "already-sent, see response #5" caching** — after context
+  compaction the earlier payload is gone, so the reference resolves to nothing.
+- **Embeddings / semantic search** — 100 MB+ of dependencies for a marginal
+  win; kept as a future optional flag, not a default.
 
 ---
 
