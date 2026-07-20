@@ -45,7 +45,7 @@ function safeResolve(p: string): string {
 // ---------------------------------------------------------------------------
 type Handler = (args: any) => Promise<string>;
 const handlers: Record<string, Handler> = {};
-const server = new McpServer({ name: "leanctx", version: "0.2.0" });
+const server = new McpServer({ name: "leanctx", version: "0.3.0" });
 
 function tool(name: string, meta: { title: string; description: string; inputSchema: any }, fn: Handler) {
   handlers[name] = fn;
@@ -209,9 +209,10 @@ tool(
       line: z.number().int().min(1).optional().describe("Definition line (use with path)."),
       before: z.number().int().min(0).max(20).optional(),
       after: z.number().int().min(0).max(20).optional(),
+      maxLines: z.number().int().min(1).max(2000).optional().describe("Cap the returned span (default 200); tail elided with a notice."),
     },
   },
-  async ({ name, path: p, line, before, after }) => {
+  async ({ name, path: p, line, before, after, maxLines }) => {
     const index = await loadIndex(ROOT);
     let file: string, defLine: number, kind = "symbol";
     if (p && line) {
@@ -221,14 +222,14 @@ tool(
       let found: { file: string; line: number; kind: string } | null = null;
       for (const [f, entry] of Object.entries(index.files))
         for (const s of entry.symbols) if (s.name === name) { found = { file: f, line: s.line, kind: s.kind }; break; }
-      if (!found) return `No definition indexed for "${name}".`;
+      if (!found) return `No definition indexed for "${name}". Run index_repo, or pass path + line explicitly.`;
       file = found.file;
       defLine = found.line;
       kind = found.kind;
     } else {
       return "Provide either name, or path + line.";
     }
-    const ctx = await getSymbolContext(ROOT, file, defLine, kind, before ?? 2, after ?? 2);
+    const ctx = await getSymbolContext(ROOT, file, defLine, kind, before ?? 2, after ?? 2, maxLines ?? 200);
     return `${ctx.file}:${ctx.line}  ${ctx.kind}  (${ctx.loc} LOC)\n${ctx.text}`;
   }
 );
@@ -259,19 +260,24 @@ tool(
   {
     title: "One-shot context brief for a symbol",
     description:
-      "Assembles in ONE call what would otherwise take several: definition site(s), signature, callers/references " +
-      "(attributed to their enclosing symbol), the file's imports, and who depends on that file. Pass withBody=true " +
-      "to include the full source of the primary definition.",
+      "Assembles in ONE call what would otherwise take several: definition, signature, callers/references (attributed " +
+      "to their enclosing symbol — heuristic), imports, and dependents. Sections are OPT-IN via `include` (default: " +
+      "definition,signature,callers,imports,dependents). Add 'body' for full source. Bounded by callerLimit and " +
+      "maxChars with explicit truncation — so it stays a token-saver, not a token-hog.",
     inputSchema: {
       name: z.string(),
-      withBody: z.boolean().optional(),
-      maxCallers: z.number().int().min(1).max(100).optional(),
+      include: z
+        .array(z.enum(["definition", "signature", "body", "callers", "imports", "dependents"]))
+        .optional()
+        .describe("Which sections to return. Omit for the default set."),
+      callerLimit: z.number().int().min(1).max(200).optional().describe("Max callers to list (default 12)."),
+      maxChars: z.number().int().min(500).max(50000).optional().describe("Hard cap on response size (default 12000)."),
     },
   },
-  async ({ name, withBody, maxCallers }) => {
+  async ({ name, include, callerLimit, maxChars }) => {
     const index = await loadIndex(ROOT);
     if (Object.keys(index.files).length === 0) return "Index is empty — run index_repo first.";
-    return buildContext(ROOT, index, name, { withBody, maxCallers });
+    return buildContext(ROOT, index, name, { include, callerLimit, maxChars });
   }
 );
 
@@ -424,7 +430,7 @@ tool(
 // ---------------------------------------------------------------------------
 async function main() {
   await server.connect(new StdioServerTransport());
-  console.error(`leanctx-mcp v0.2.0 ready. root=${ROOT}  tools=${Object.keys(handlers).length}`);
+  console.error(`leanctx-mcp v0.3.0 ready. root=${ROOT}  tools=${Object.keys(handlers).length}`);
 }
 main().catch((e) => {
   console.error("leanctx-mcp fatal:", e);

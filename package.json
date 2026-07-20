@@ -1,6 +1,6 @@
 {
   "name": "leanctx-mcp",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "A local MCP server that reduces token usage for coding agents by returning code outlines, compact search results, and ranged reads instead of whole files.",
   "type": "module",
   "bin": {

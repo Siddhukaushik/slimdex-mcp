@@ -14,7 +14,7 @@ model's context, an agent asks leanctx for exactly what it needs:
 | `search_code` | `path:line:col` + the matching line (+ caret highlight) | No file dumps; `limit`/`offset` pagination |
 | `find_definition` | Definition site(s) of a symbol as `path:line:col` | Go-to-definition without loading files |
 | `find_references` | References as `path:line:col` **+ enclosing function** | Lightweight call-hierarchy; locations only |
-| `get_context` | **One call**: definition + signature + callers + imports + dependents | Replaces ~5 tool calls with one lean brief |
+| `get_context` | **One call**: opt-in definition / signature / callers / imports / dependents, budgeted | Replaces ~5 tool calls with one bounded brief |
 | `repo_map` | Dir-level file/line/symbol counts | Orient in one small response |
 | `dep_graph` | `imports` / `dependents` / a Mermaid diagram | Graph notation compresses relationships far better than JSON |
 | `batch` | Runs several calls in one request | Cuts per-call MCP protocol overhead |
@@ -27,6 +27,14 @@ does it depend on" in a single response. Drop to `get_symbol_context` for one
 body, `get_file_skeleton` for a file's shape, and `read_lines` only when you need
 exact source. Use `batch` to bundle several lookups. Every search tool takes
 `limit` (default 20) and `offset`.
+
+**Response budgeting** (so the aggregator never becomes the token hog):
+`get_context` sections are opt-in via `include`, callers are capped by
+`callerLimit`, and the whole response is bounded by `maxChars` — every cap that
+trips prints an explicit notice (`showing 3 of 68`, `truncated at maxChars=...`),
+never a silent drop. `get_symbol_context` caps its span with `maxLines` the same
+way. This directly follows the peer-review guidance: skip model-specific token
+*estimation*, but never skip deterministic response *budgeting*.
 
 ### Config: `<root>/.leanctx.json` (optional)
 
