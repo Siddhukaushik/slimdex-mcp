@@ -1,0 +1,26 @@
+{
+  "name": "leanctx-mcp",
+  "version": "0.1.0",
+  "description": "A local MCP server that reduces token usage for coding agents by returning code outlines, compact search results, and ranged reads instead of whole files.",
+  "type": "module",
+  "bin": {
+    "leanctx-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "license": "MIT"
+}
