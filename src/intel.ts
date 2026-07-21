@@ -17,30 +17,83 @@ function leadingWS(line: string): number {
   return line.length - line.trimStart().length;
 }
 
+// Carry-over lexer state for brace counting across lines. Only block comments
+// and template literals legitimately span lines; ' and " strings reset at EOL
+// so one unbalanced quote can't poison the rest of the file.
+interface ScanState {
+  inBlockComment: boolean;
+  stringChar: string | null; // "'", '"', or "`"
+}
+
+// Count braces on one line, skipping those inside strings and comments.
+// Known gap (documented): inline `#` comments (Python) are not stripped,
+// because `#` is also the JS private-field sigil; full-line `#` comments are
+// handled by the caller.
+export function braceDelta(line: string, st: ScanState): { open: number; close: number } {
+  let open = 0;
+  let close = 0;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    const next = line[i + 1];
+    if (st.inBlockComment) {
+      if (ch === "*" && next === "/") {
+        st.inBlockComment = false;
+        i++;
+      }
+      continue;
+    }
+    if (st.stringChar) {
+      if (ch === "\\") {
+        i++; // skip escaped char
+      } else if (ch === st.stringChar) {
+        st.stringChar = null;
+      }
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      st.inBlockComment = true;
+      i++;
+      continue;
+    }
+    if (ch === "/" && next === "/") break; // line comment: ignore the rest
+    if (ch === "'" || ch === '"' || ch === "`") {
+      st.stringChar = ch;
+      continue;
+    }
+    if (ch === "{") open++;
+    else if (ch === "}") close++;
+  }
+  // ' and " don't span lines; only ` (template literal) carries over.
+  if (st.stringChar === "'" || st.stringChar === '"') st.stringChar = null;
+  return { open, close };
+}
+
 // Given a 1-indexed definition line, return the inclusive [start,end] span of
-// its body. Braces win when present; otherwise fall back to indentation.
+// its body. Braces win when present (counted string/comment-aware); otherwise
+// fall back to indentation.
 export function extractBlock(lines: string[], startLine: number): { start: number; end: number } {
   const i0 = startLine - 1;
   if (i0 < 0 || i0 >= lines.length) return { start: startLine, end: startLine };
   const defIndent = leadingWS(lines[i0]);
 
+  const st: ScanState = { inBlockComment: false, stringChar: null };
   let sawBrace = false;
   let depth = 0;
-  for (let i = i0; i < lines.length; i++) {
-    for (const ch of lines[i]) {
-      if (ch === "{") {
-        depth++;
-        sawBrace = true;
-      } else if (ch === "}") {
-        depth--;
-        if (sawBrace && depth <= 0) return { start: startLine, end: i + 1 };
-      }
+  const limit = Math.min(lines.length, i0 + 2001); // safety valve
+  for (let i = i0; i < limit; i++) {
+    const t = lines[i].trim();
+    // Full-line comments can't affect code structure (covers Python `#` too).
+    const fullLineComment = !st.inBlockComment && !st.stringChar && (t.startsWith("#") || t.startsWith("//"));
+    if (!fullLineComment) {
+      const d = braceDelta(lines[i], st);
+      if (d.open > 0) sawBrace = true;
+      depth += d.open - d.close;
+      if (sawBrace && depth <= 0 && d.close > 0) return { start: startLine, end: i + 1 };
     }
-    if (i - i0 > 2000) break; // safety valve
     if (sawBrace) continue;
     // No brace yet. If the next non-empty line is not more-indented, this is a
     // one-liner (e.g. `const x = 1`) — stop here.
-    if (i > i0 && lines[i].trim() && leadingWS(lines[i]) <= defIndent) break;
+    if (i > i0 && t && leadingWS(lines[i]) <= defIndent) break;
   }
 
   if (!sawBrace) {
@@ -170,28 +223,34 @@ export async function buildContext(
   if (include.has("callers")) {
     // Textual references, attributed to their enclosing symbol (HEURISTIC — a
     // whole-word text match, not scope-resolved), excluding the def sites.
+    // Files are read in parallel batches rather than one-at-a-time: on large
+    // repos the serial version was the dominant cost of this whole call.
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = new RegExp(`\\b${escaped}\\b`);
-    const callers: string[] = [];
-    let totalSeen = 0;
     const defSet = new Set(defs.map((d) => `${d.file}:${d.line}`));
-    for (const [file, entry] of Object.entries(index.files)) {
-      const fsrc = file === primary.file ? src : await fs.readFile(path.join(root, file), "utf8").catch(() => "");
-      if (!fsrc) continue;
-      const flines = fsrc.split(/\r?\n/);
-      for (let i = 0; i < flines.length; i++) {
-        if (defSet.has(`${file}:${i + 1}`)) continue;
-        if (re.test(flines[i])) {
-          totalSeen++;
-          if (callers.length < callerLimit) {
-            const enc = enclosingSymbol(entry, i + 1);
-            callers.push(`  ${file}:${i + 1}${enc ? `  in ${enc.kind} ${enc.name}` : ""}`);
-          }
+    const files = Object.keys(index.files);
+
+    const hits: { file: string; line: number; enc: ReturnType<typeof enclosingSymbol> }[] = [];
+    const BATCH = 24;
+    for (let b = 0; b < files.length; b += BATCH) {
+      const slice = files.slice(b, b + BATCH);
+      const sources = await Promise.all(
+        slice.map((f) => (f === primary.file ? Promise.resolve(src) : fs.readFile(path.join(root, f), "utf8").catch(() => "")))
+      );
+      slice.forEach((file, k) => {
+        const fsrc = sources[k];
+        if (!fsrc) return;
+        const entry = index.files[file];
+        const re = new RegExp(`\\b${escaped}\\b`); // fresh per file: no lastIndex carry
+        const flines = fsrc.split(/\r?\n/);
+        for (let i = 0; i < flines.length; i++) {
+          if (defSet.has(`${file}:${i + 1}`)) continue;
+          if (re.test(flines[i])) hits.push({ file, line: i + 1, enc: enclosingSymbol(entry, i + 1) });
         }
-      }
+      });
     }
-    out.push(`## Callers / references — heuristic (showing ${callers.length} of ${totalSeen})`);
-    out.push(callers.length ? callers.join("\n") : "  (none found)");
+    const shown = hits.slice(0, callerLimit).map((h) => `  ${h.file}:${h.line}${h.enc ? `  in ${h.enc.kind} ${h.enc.name}` : ""}`);
+    out.push(`## Callers / references — heuristic (showing ${shown.length} of ${hits.length})`);
+    out.push(shown.length ? shown.join("\n") : "  (none found)");
     out.push("");
   }
 

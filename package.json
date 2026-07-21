@@ -1,18 +1,31 @@
 {
   "name": "leanctx-mcp",
-  "version": "0.3.0",
-  "description": "A local MCP server that reduces token usage for coding agents by returning code outlines, compact search results, and ranged reads instead of whole files.",
+  "version": "0.4.0",
+  "description": "A local MCP server that reduces token usage for coding agents by returning code outlines, surgical symbol context, a dependency graph, and persistent memory instead of whole files.",
   "type": "module",
+  "keywords": ["mcp", "model-context-protocol", "claude", "coding-agent", "tokens", "code-intelligence", "llm"],
+  "homepage": "https://github.com/Siddhukaushik/leanctx-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Siddhukaushik/leanctx-mcp.git"
+  },
   "bin": {
     "leanctx-mcp": "dist/index.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "test": "vitest run",
+    "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
@@ -20,7 +33,8 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "vitest": "^4.1.10"
   },
   "license": "MIT"
 }

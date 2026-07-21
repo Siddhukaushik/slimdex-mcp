@@ -11,12 +11,12 @@ model's context, an agent asks leanctx for exactly what it needs:
 | `get_file_skeleton` | Signatures with bodies elided, nesting preserved | A 2,000-line file becomes a ~50-line map |
 | `read_lines` | One line range | Read the 20 lines you need, not the 800-line file |
 | `get_symbol_context` | Just a function/class body ±2 lines | ~95% saved vs reading the whole file for one symbol |
-| `search_code` | `path:line:col` + the matching line (+ caret highlight) | No file dumps; `limit`/`offset` pagination |
+| `search_code` | `path:line:col` + the matching line (+ caret highlight) | No file dumps; `limit` + `offset`/opaque-`cursor` pagination |
 | `find_definition` | Definition site(s) of a symbol as `path:line:col` | Go-to-definition without loading files |
 | `find_references` | References as `path:line:col` **+ enclosing function** | Lightweight call-hierarchy; locations only |
 | `get_context` | **One call**: opt-in definition / signature / callers / imports / dependents, budgeted | Replaces ~5 tool calls with one bounded brief |
 | `repo_map` | Dir-level file/line/symbol counts | Orient in one small response |
-| `dep_graph` | `imports` / `dependents` / a Mermaid diagram | Graph notation compresses relationships far better than JSON |
+| `dep_graph` | `imports` / `dependents` / a Mermaid diagram (`root`+`depth` BFS) | Graph notation compresses relationships far better than JSON |
 | `batch` | Runs several calls in one request | Cuts per-call MCP protocol overhead |
 | `memory_save/search/list/delete` | Durable notes in `.leanctx/memory.json` | Persistent memory across restarts |
 
@@ -59,13 +59,23 @@ it's honest — no code is sent to any third party, everything runs locally.
 
 ### Honest limitations
 
+- Block extraction (used by `get_symbol_context` / `get_context`) counts braces
+  **string- and comment-aware**: braces inside `"..."`, `'...'`, backtick
+  templates, `//` and `/* */` comments, and full-line `#` comments are ignored.
+  Known gap: an *inline* Python `#` comment containing a brace can still
+  confuse it (`#` is also the JS private-field sigil, so it can't be stripped
+  blindly).
 - Symbol extraction is **regex-based and heuristic**, not a full parser or LSP.
   It supports JS/TS, Python, Go, Rust, Java/C#, Ruby, and common C-family
   syntax. It can miss unusual declarations and `find_references` is a *textual*
   match (may include same-named but unrelated identifiers).
-- For LSP-grade precision you'd swap the `symbols.ts` extractor for tree-sitter
-  or a real language server — the tool surface would stay identical. That's a
-  deliberate upgrade slot, not shipped here.
+- For LSP-grade precision you'd swap the parser for tree-sitter or a real
+  language server. `src/parser.ts` is the seam for exactly this: a `Parser`
+  interface selected by `LEANCTX_PARSER`, with the regex parser as the default
+  implementation. A tree-sitter backend drops in there without touching any tool
+  or the index format. It's deferred (not shipped) because per-language grammars
+  trade away the "installs instantly, runs offline, zero config" property that is
+  the whole point — deliberate, per the design notes, not an oversight.
 
 ### Deliberately NOT built (and why)
 
@@ -85,12 +95,22 @@ don't actually work under MCP's execution model:
 
 ---
 
-## Install & build
+## Install
+
+Once published to npm, no build step or checkout is needed — MCP clients can run
+it on demand:
+
+```jsonc
+"command": "npx", "args": ["-y", "leanctx-mcp"]
+```
+
+### Or build from source
 
 ```bash
 cd leanctx-mcp
 npm install
 npm run build      # produces dist/index.js
+npm test           # 38 unit tests
 ```
 
 Verify it runs against any repo:
@@ -98,6 +118,14 @@ Verify it runs against any repo:
 ```bash
 node smoke-test.mjs "C:/path/to/some/repo"
 ```
+
+### Environment variables
+
+| Var | Effect |
+|-----|--------|
+| `LEANCTX_ROOT` | Repo to index (or pass as the first CLI arg; defaults to cwd) |
+| `LEANCTX_WATCH` | Set to `1` to auto-reindex on file save (native watcher, no deps) |
+| `LEANCTX_PARSER` | Parser backend; only `regex` ships today (tree-sitter is a documented future slot) |
 
 ## The persistent cache
 

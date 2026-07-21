@@ -19,7 +19,7 @@ import { randomUUID } from "node:crypto";
 
 import { outline, formatOutline } from "./outline.js";
 import { buildOrRefresh, toPosix } from "./indexer.js";
-import { searchFiles, formatMatches } from "./search.js";
+import { searchFiles, formatMatches, encodeCursor, decodeCursor } from "./search.js";
 import { buildGraph, dependents, toMermaid } from "./graph.js";
 import { fileSkeleton, getSymbolContext, buildContext, enclosingSymbol } from "./intel.js";
 import { loadIndex, loadMemory, saveMemory, type MemoryFact } from "./store.js";
@@ -45,7 +45,7 @@ function safeResolve(p: string): string {
 // ---------------------------------------------------------------------------
 type Handler = (args: any) => Promise<string>;
 const handlers: Record<string, Handler> = {};
-const server = new McpServer({ name: "leanctx", version: "0.3.0" });
+const server = new McpServer({ name: "leanctx", version: "0.4.0" });
 
 function tool(name: string, meta: { title: string; description: string; inputSchema: any }, fn: Handler) {
   handlers[name] = fn;
@@ -115,8 +115,8 @@ tool(
   {
     title: "Compact code search",
     description:
-      "Search indexed files; return path:line:col + the matching line (+ optional caret highlight). Supports limit " +
-      "and offset for pagination. Vendor/build dirs are already excluded by the index.",
+      "Search indexed files; return path:line:col + the matching line (+ optional caret highlight). Page with limit " +
+      "and either offset or the opaque cursor from a previous call. Vendor/build dirs are already excluded.",
     inputSchema: {
       pattern: z.string(),
       regex: z.boolean().optional(),
@@ -124,23 +124,36 @@ tool(
       pathPrefix: z.string().optional(),
       highlight: z.boolean().optional(),
       limit: z.number().int().min(1).max(1000).optional().describe("Max matches to return (default 20)."),
-      offset: z.number().int().min(0).optional().describe("Skip this many matches (pagination)."),
+      offset: z.number().int().min(0).optional().describe("Skip this many matches. Ignored if cursor is given."),
+      cursor: z.string().optional().describe("Opaque token from a previous call's 'next cursor' to fetch the next page."),
     },
   },
-  async ({ pattern, regex, ignoreCase, pathPrefix, highlight, limit, offset }) => {
+  async ({ pattern, regex, ignoreCase, pathPrefix, highlight, limit, offset, cursor }) => {
     const index = await loadIndex(ROOT);
     let files = Object.keys(index.files);
     if (files.length === 0) return "Index is empty — run index_repo first.";
     if (pathPrefix) files = files.filter((f) => f.startsWith(toPosix(pathPrefix)));
+
+    const lim = limit ?? 20;
+    let start = offset ?? 0;
+    let staleNote = "";
+    if (cursor) {
+      const c = decodeCursor(cursor);
+      if (!c) return "Err: invalid cursor. Omit it to start from the beginning.";
+      start = c.offset;
+      if (c.version && c.version !== index.builtAt) staleNote = " (note: index changed since the cursor was issued; results may have shifted)";
+    }
+
     const { matches, total } = await searchFiles(ROOT, files, pattern, {
       regex,
       ignoreCase,
       highlight,
-      maxMatches: limit ?? 20,
-      offset: offset ?? 0,
+      maxMatches: lim,
+      offset: start,
     });
-    const more = total >= (offset ?? 0) + (limit ?? 20) ? " (more available — raise offset)" : "";
-    return `${matches.length} match(es)${more}\n${formatMatches(matches)}`;
+    const hasMore = total >= start + lim;
+    const next = hasMore ? `\nnext cursor: ${encodeCursor(start + lim, index.builtAt)}` : "";
+    return `${matches.length} match(es)${hasMore ? " (more available)" : ""}${staleNote}\n${formatMatches(matches)}${next}`;
   }
 );
 
@@ -219,13 +232,18 @@ tool(
       file = toPosix(path.relative(ROOT, safeResolve(p)));
       defLine = line;
     } else if (name) {
-      let found: { file: string; line: number; kind: string } | null = null;
+      const found: { file: string; line: number; kind: string }[] = [];
       for (const [f, entry] of Object.entries(index.files))
-        for (const s of entry.symbols) if (s.name === name) { found = { file: f, line: s.line, kind: s.kind }; break; }
-      if (!found) return `No definition indexed for "${name}". Run index_repo, or pass path + line explicitly.`;
-      file = found.file;
-      defLine = found.line;
-      kind = found.kind;
+        for (const s of entry.symbols) if (s.name === name) found.push({ file: f, line: s.line, kind: s.kind });
+      if (found.length === 0) return `No definition indexed for "${name}". Run index_repo, or pass path + line explicitly.`;
+      if (found.length > 1)
+        return (
+          `"${name}" has ${found.length} definitions — pass path + line to pick one:\n` +
+          found.map((d) => `  ${d.file}:${d.line}  ${d.kind}`).join("\n")
+        );
+      file = found[0].file;
+      defLine = found[0].line;
+      kind = found[0].kind;
     } else {
       return "Provide either name, or path + line.";
     }
@@ -315,17 +333,25 @@ tool(
     title: "Dependency graph query",
     description:
       "Query the internal import graph. mode=imports: what a file imports. mode=dependents: what imports a file. " +
-      "mode=mermaid: a Mermaid diagram of internal edges (optionally scoped to a path prefix).",
+      "mode=mermaid: a Mermaid diagram — pass root (+depth, default 2) to walk outward from one file instead of " +
+      "dumping the whole graph, or scope to a path prefix.",
     inputSchema: {
       mode: z.enum(["imports", "dependents", "mermaid"]),
       target: z.string().optional(),
       scope: z.string().optional(),
+      root: z.string().optional().describe("mermaid: start file to walk out from (BFS)."),
+      depth: z.number().int().min(1).max(6).optional().describe("mermaid: import hops to follow from root (default 2)."),
     },
   },
-  async ({ mode, target, scope }) => {
+  async ({ mode, target, scope, root, depth }) => {
     const index = await loadIndex(ROOT);
     const graph = buildGraph(index);
-    if (mode === "mermaid") return "```mermaid\n" + toMermaid(graph, scope ? toPosix(scope) : undefined) + "\n```";
+    if (mode === "mermaid")
+      return (
+        "```mermaid\n" +
+        toMermaid(graph, scope ? toPosix(scope) : undefined, { root: root ? toPosix(root) : undefined, depth }) +
+        "\n```"
+      );
     if (!target) return "target is required for imports/dependents modes.";
     const t = toPosix(target);
     if (mode === "imports") {
@@ -430,7 +456,12 @@ tool(
 // ---------------------------------------------------------------------------
 async function main() {
   await server.connect(new StdioServerTransport());
-  console.error(`leanctx-mcp v0.3.0 ready. root=${ROOT}  tools=${Object.keys(handlers).length}`);
+  console.error(`leanctx-mcp v0.4.0 ready. root=${ROOT}  tools=${Object.keys(handlers).length}`);
+  // Opt-in auto-reindex on file change. Off unless LEANCTX_WATCH is truthy.
+  if (["1", "true", "yes"].includes((process.env.LEANCTX_WATCH || "").toLowerCase())) {
+    const { startWatcher } = await import("./watch.js");
+    startWatcher(ROOT);
+  }
 }
 main().catch((e) => {
   console.error("leanctx-mcp fatal:", e);

@@ -4,7 +4,7 @@
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { extractSymbols, extractImports } from "./symbols.js";
+import { getParser } from "./parser.js";
 import { loadIndex, saveIndex, type CodeIndex, type FileEntry } from "./store.js";
 
 const IGNORE_DIRS = new Set([
@@ -111,11 +111,12 @@ export async function buildOrRefresh(root: string, force = false): Promise<Index
     } catch {
       continue;
     }
+    const parser = getParser();
     const entry: FileEntry = {
       mtimeMs: stat.mtimeMs,
       lines: source.split(/\r?\n/).length,
-      symbols: extractSymbols(source),
-      imports: extractImports(source),
+      symbols: parser.extractSymbols(source),
+      imports: parser.extractImports(source),
     };
     index.files[rel] = entry;
     parsed++;

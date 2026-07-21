@@ -65,6 +65,24 @@ export async function searchFiles(
   return { matches: out.slice(offset), total: out.length };
 }
 
+// Opaque cursor for stable pagination. It encodes the next offset plus the
+// index build time, so if the repo was re-indexed between pages we can warn
+// that results may have shifted rather than silently skip/dupe rows. Callers
+// pass the token back as-is; its internals are not a contract.
+export function encodeCursor(nextOffset: number, indexVersion: string): string {
+  return Buffer.from(JSON.stringify({ o: nextOffset, v: indexVersion })).toString("base64url");
+}
+
+export function decodeCursor(cursor: string): { offset: number; version: string } | null {
+  try {
+    const d = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+    if (typeof d.o === "number") return { offset: d.o, version: String(d.v ?? "") };
+  } catch {
+    /* malformed cursor */
+  }
+  return null;
+}
+
 export function formatMatches(matches: Match[]): string {
   if (matches.length === 0) return "No matches.";
   return matches
