@@ -135,6 +135,17 @@ correctness assertions live in `integration.test.ts`.
 your machine. This one you can check yourself:
 `grep -rE "fetch\(|https?://|axios|http\.request" src/`.
 
+## Longer documentation
+
+In [`docs/`](docs/):
+
+- [`tool-reference.html`](docs/tool-reference.html) — every tool with real
+  captured output, the architecture, and the measured comparison
+- [`explained-simply.html`](docs/explained-simply.html) — the same in plain
+  language, with three end-to-end walkthroughs
+- [`token-savings-report.md`](docs/token-savings-report.md) — the original A/B
+  measurement, its method, and how to repeat it
+
 ## Language coverage
 
 Measured against a fixture per language, counting the declarations a developer

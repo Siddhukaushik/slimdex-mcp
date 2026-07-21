@@ -36,6 +36,8 @@ const NOT_A_METHOD = new Set([
   "if", "for", "while", "switch", "catch", "do", "else", "return", "function",
   "typeof", "delete", "new", "await", "yield", "case", "throw", "with", "in",
   "of", "try", "finally", "import", "export", "default",
+  // C-family and Ruby block keywords that also take the shape `name (expr) {`.
+  "synchronized", "lock", "using", "fixed", "unless", "until", "elsif", "foreach",
 ]);
 
 // A type reference with optional generics (one level of nesting, spaces allowed
@@ -73,11 +75,37 @@ const RULES: Rule[] = [
   {
     kind: "method",
     re: new RegExp(
-      "^[ \\t]+(?:(?:public|private|protected|internal|global|static|final|virtual|override|abstract|sealed|synchronized|async|unsafe|transient|webservice)\\s+)+" +
+      // Modifiers are OPTIONAL: package-private Java methods (`void run() {`)
+      // have none, and requiring one made them invisible. What keeps this from
+      // matching control flow is the shape it demands — two identifiers (return
+      // type then name) before the parenthesis, where `if (cond) {` has one —
+      // plus the statement-keyword guard.
+      "^[ \\t]+(?!(?:return|throw|new|else|case|await|yield|delete|typeof)\\b)" +
+        "(?:(?:public|private|protected|internal|global|static|final|virtual|override|abstract|sealed|synchronized|async|unsafe|transient|webservice)\\s+)*" +
         // Optional generic type parameter, as in `static <T> Optional<T> firstOf(…)`.
         "(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>\\s+)?" +
         RETURN_TYPE +
         "\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s*\\(.*\\)\\s*(?:\\{|$)"
+    ),
+    reject: NOT_A_METHOD,
+  },
+  // Interface / abstract method declarations: a signature with no body, ending
+  // in `;` and often with no access modifier at all — `void save(Order o);`,
+  // `Map<Id, Account> byId(Set<Id> ids);`. Interface-heavy frameworks (fflib,
+  // Spring, any DI container) are mostly made of these, and they're exactly the
+  // names you navigate to, so the modifier-required rules above miss the point.
+  //
+  // The lookahead is what keeps this safe: without it, an ordinary statement
+  // like `return foo(x);` parses as return-type `return`, name `foo`, and gets
+  // indexed as a declaration.
+  {
+    kind: "method",
+    re: new RegExp(
+      "^[ \\t]+(?!(?:return|throw|new|else|case|await|yield|delete|typeof)\\b)" +
+        "(?:(?:public|private|protected|internal|global|abstract|static|default)\\s+)*" +
+        "(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>\\s+)?" +
+        RETURN_TYPE +
+        "\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s*\\([^;{]*\\)\\s*;\\s*$"
     ),
     reject: NOT_A_METHOD,
   },

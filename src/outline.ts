@@ -28,6 +28,8 @@ const NOT_A_METHOD = new Set([
   "if", "for", "while", "switch", "catch", "do", "else", "return", "function",
   "typeof", "delete", "new", "await", "yield", "case", "throw", "with", "in",
   "of", "try", "finally", "import", "export", "default",
+  // C-family and Ruby block keywords that also take the shape `name (expr) {`.
+  "synchronized", "lock", "using", "fixed", "unless", "until", "elsif", "foreach",
 ]);
 
 const COMMON: Rule[] = [

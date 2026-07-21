@@ -202,3 +202,56 @@ describe("Python", () => {
     expectAll(src, ["UserService", "__init__", "get_user", "build", "helper"]);
   });
 });
+
+describe("framework idioms (fflib, Spring, DI-style code)", () => {
+  it("finds interface method declarations that have no body and no modifier", () => {
+    // Interface-heavy frameworks are mostly these, and they're exactly the names
+    // you navigate to. The modifier-required method rules miss them entirely.
+    const src = [
+      "public interface IAccountService {",
+      "    void createAccounts(List<Account> accs);",
+      "    Map<Id, Account> byId(Set<Id> ids);",
+      "}",
+    ].join("\n");
+    expectAll(src, ["IAccountService", "createAccounts", "byId"]);
+  });
+
+  it("does not mistake ordinary statements for declarations", () => {
+    // `return foo(x);` parses as return-type `return`, name `foo` without a
+    // guard, which would index every return statement in the codebase.
+    const src = [
+      "class C {",
+      "    void m() {",
+      "        return foo(x);",
+      "        this.helper(a);",
+      "        Logger.debug('m');",
+      "        int y = calc(z);",
+      "        obj.method(1);",
+      "    }",
+      "}",
+    ].join("\n");
+    expect(names(src).sort()).toEqual(["C", "m"]);
+  });
+
+  it("handles annotated, inherited-sharing, extending and implementing classes", () => {
+    const src = [
+      "@RestResource(urlMapping='/v1/accounts/*')",
+      "global with sharing class AccountApi extends fflib_SObjectDomain implements Database.Batchable<SObject> {",
+      "    public inherited sharing class Inner implements fflib_SObjectDomain.IConstructable {",
+      "        public fflib_SObjectDomain construct(List<SObject> records) { return null; }",
+      "    }",
+      "    global Database.QueryLocator start(Database.BatchableContext bc) { return null; }",
+      "    @AuraEnabled(cacheable=true)",
+      "    public static List<Map<String, Object>> query(String soql) { return null; }",
+      "    public override void onApplyDefaults() { }",
+      "    private AccountApi() { }",
+      "}",
+    ].join("\n");
+    expectAll(src, ["AccountApi", "Inner", "construct", "start", "query", "onApplyDefaults"]);
+  });
+
+  it("finds constructors, which have no return type", () => {
+    const src = ["public class Application {", "    private Application() { }", "}"].join("\n");
+    expect(names(src).filter((n) => n === "Application").length).toBe(2); // class + constructor
+  });
+});

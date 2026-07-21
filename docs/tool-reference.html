@@ -1,0 +1,667 @@
+<title>CodeGlance — how it works, tool by tool</title>
+
+<style>
+  :root {
+    --ink:        #141b24;
+    --ground:     #f5f6f8;
+    --surface:    #ffffff;
+    --surface-2:  #eceef2;
+    --rule:       #d8dce3;
+    --body:       #2b3540;
+    --muted:      #5c6875;
+    --indigo:     #31459c;
+    --teal:       #0d6f6a;
+    --teal-soft:  #0d6f6a1a;
+    --bulk:       #7d8794;
+    --bulk-soft:  #7d879426;
+    --serif: ui-serif, Georgia, "Iowan Old Style", "Times New Roman", serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink:       #e7ebf0;
+      --ground:    #0f151d;
+      --surface:   #161e28;
+      --surface-2: #1d2732;
+      --rule:      #2b3643;
+      --body:      #c3cbd6;
+      --muted:     #8994a2;
+      --indigo:    #8ea3ee;
+      --teal:      #3bb5aa;
+      --teal-soft: #3bb5aa1f;
+      --bulk:      #78838f;
+      --bulk-soft: #78838f2b;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink:#e7ebf0; --ground:#0f151d; --surface:#161e28; --surface-2:#1d2732;
+    --rule:#2b3643; --body:#c3cbd6; --muted:#8994a2; --indigo:#8ea3ee;
+    --teal:#3bb5aa; --teal-soft:#3bb5aa1f; --bulk:#78838f; --bulk-soft:#78838f2b;
+  }
+  :root[data-theme="light"] {
+    --ink:#141b24; --ground:#f5f6f8; --surface:#ffffff; --surface-2:#eceef2;
+    --rule:#d8dce3; --body:#2b3540; --muted:#5c6875; --indigo:#31459c;
+    --teal:#0d6f6a; --teal-soft:#0d6f6a1a; --bulk:#7d8794; --bulk-soft:#7d879426;
+  }
+
+  body {
+    background: var(--ground);
+    color: var(--body);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.65;
+    margin: 0;
+  }
+  .wrap { max-width: 60rem; margin: 0 auto; padding: 0 1.5rem 6rem; }
+  .prose { max-width: 40rem; }
+
+  h1, h2, h3, h4 { font-family: var(--serif); color: var(--ink); text-wrap: balance; font-weight: 600; }
+  h1 { font-size: clamp(2.1rem, 5vw, 3.1rem); line-height: 1.1; letter-spacing: -0.02em; margin: 0 0 .6rem; }
+  h2 { font-size: 1.85rem; line-height: 1.2; margin: 0 0 .4rem; letter-spacing: -0.01em; }
+  h3 { font-size: 1.15rem; margin: 0 0 .3rem; }
+  h4 { font-size: 1rem; margin: 0; font-family: var(--mono); font-weight: 600; letter-spacing: -0.01em; }
+  p { margin: 0 0 1rem; }
+  a { color: var(--indigo); }
+  strong { color: var(--ink); font-weight: 650; }
+  code { font-family: var(--mono); font-size: .87em; background: var(--surface-2); padding: .12em .35em; border-radius: 3px; }
+
+  .eyebrow {
+    font-family: var(--mono); font-size: .72rem; text-transform: uppercase;
+    letter-spacing: .13em; color: var(--muted); margin: 0 0 .7rem;
+  }
+  header.top { padding: 4.5rem 0 2.5rem; border-bottom: 1px solid var(--rule); margin-bottom: 3rem; }
+  .lede { font-size: 1.2rem; color: var(--muted); max-width: 38rem; margin: 0; }
+
+  section { padding: 3.2rem 0 0; }
+  section > .prose > h2 + p.sub { color: var(--muted); margin-top: -.1rem; margin-bottom: 1.4rem; }
+
+  /* code output panels */
+  pre {
+    font-family: var(--mono); font-size: .8rem; line-height: 1.55;
+    background: var(--surface); color: var(--body);
+    border: 1px solid var(--rule); border-radius: 6px;
+    padding: .9rem 1rem; overflow-x: auto; margin: 0;
+    white-space: pre;
+  }
+  pre .c { color: var(--muted); }
+  pre .hi { color: var(--teal); font-weight: 600; }
+  .callline { font-family: var(--mono); font-size: .8rem; color: var(--ink); background: var(--surface-2);
+    border: 1px solid var(--rule); border-bottom: none; border-radius: 6px 6px 0 0; padding: .5rem .8rem; overflow-x: auto; }
+  .callline + pre { border-radius: 0 0 6px 6px; }
+  .cost { font-family: var(--mono); font-size: .72rem; color: var(--muted); margin-top: .35rem; }
+
+  /* pipeline */
+  .pipe { display: grid; gap: .6rem; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); margin: 1.5rem 0 .5rem; }
+  .stage { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: .9rem 1rem; }
+  .stage .n { font-family: var(--mono); font-size: .68rem; color: var(--teal); letter-spacing: .1em; text-transform: uppercase; }
+  .stage h4 { font-family: var(--serif); font-size: 1.02rem; margin: .2rem 0 .3rem; }
+  .stage p { font-size: .85rem; color: var(--muted); margin: 0; line-height: 1.5; }
+
+  /* comparison */
+  .versus { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); margin: 1.6rem 0; }
+  .col { border: 1px solid var(--rule); border-radius: 6px; padding: 1rem 1.1rem; background: var(--surface); }
+  .col.without { border-top: 3px solid var(--bulk); }
+  .col.with { border-top: 3px solid var(--teal); }
+  .col h3 { font-family: var(--mono); font-size: .82rem; text-transform: uppercase; letter-spacing: .09em; margin-bottom: .7rem; }
+  .col.without h3 { color: var(--bulk); }
+  .col.with h3 { color: var(--teal); }
+  .col ul { margin: 0; padding-left: 1.1rem; font-size: .88rem; }
+  .col li { margin-bottom: .3rem; }
+  .col li span { font-family: var(--mono); font-size: .78rem; color: var(--muted); }
+  .tot { margin-top: .8rem; padding-top: .7rem; border-top: 1px solid var(--rule);
+         font-family: var(--mono); font-size: .92rem; color: var(--ink); font-variant-numeric: tabular-nums; }
+
+  .bars { margin: 1.2rem 0 .4rem; display: grid; gap: .5rem; }
+  .bar-row { display: grid; grid-template-columns: 8.5rem 1fr; gap: .7rem; align-items: center; }
+  .bar-row .lbl { font-family: var(--mono); font-size: .74rem; color: var(--muted); text-align: right; }
+  .bar { height: 1.55rem; border-radius: 3px; display: flex; align-items: center; padding: 0 .5rem;
+         font-family: var(--mono); font-size: .72rem; color: var(--ink); font-variant-numeric: tabular-nums; min-width: 5.5rem; }
+  .bar.b-without { background: var(--bulk-soft); border-left: 3px solid var(--bulk); }
+  .bar.b-with { background: var(--teal-soft); border-left: 3px solid var(--teal); }
+
+  /* tool groups */
+  .grouphead { display: flex; align-items: baseline; gap: .8rem; margin: 2.6rem 0 .3rem; padding-bottom: .4rem; border-bottom: 1px solid var(--rule); }
+  .grouphead h3 { font-size: 1.35rem; margin: 0; }
+  .grouphead .job { font-family: var(--mono); font-size: .74rem; color: var(--muted); }
+  .tool { margin: 1.7rem 0 0; }
+  .tool-head { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap; margin-bottom: .3rem; }
+  .tool-head h4 { color: var(--ink); }
+  .tool-head .tag { font-family: var(--mono); font-size: .68rem; color: var(--teal); background: var(--teal-soft); padding: .1rem .4rem; border-radius: 3px; }
+  .tool > p { font-size: .93rem; margin: 0 0 .6rem; max-width: 42rem; }
+
+  table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+  .tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 6px; }
+  th, td { text-align: left; padding: .55rem .8rem; border-bottom: 1px solid var(--rule); }
+  th { font-family: var(--mono); font-size: .72rem; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); background: var(--surface-2); }
+  tr:last-child td { border-bottom: none; }
+  td code { background: none; padding: 0; color: var(--ink); }
+  .num { font-variant-numeric: tabular-nums; text-align: right; }
+
+  .note { border-left: 3px solid var(--indigo); background: var(--surface); padding: .8rem 1rem; margin: 1.2rem 0; font-size: .92rem; border-radius: 0 4px 4px 0; }
+  .note strong { color: var(--indigo); }
+  .warn { border-left-color: var(--bulk); }
+  .warn strong { color: var(--ink); }
+
+  hr { border: none; border-top: 1px solid var(--rule); margin: 3.5rem 0 0; }
+  footer { padding: 2rem 0 0; font-size: .85rem; color: var(--muted); }
+</style>
+
+<div class="wrap">
+
+<header class="top">
+  <p class="eyebrow">codeglance-mcp · v0.7.0 · 19 tools</p>
+  <h1>Return the answer,<br>not the haystack.</h1>
+  <p class="lede">
+    How CodeGlance is built, what each of its nineteen tools does, and what it
+    actually costs to answer one real question about one real Lightning Web
+    Component — measured both ways.
+  </p>
+</header>
+
+<section>
+  <div class="prose">
+    <h2>The problem it exists for</h2>
+    <p>
+      Ask an agent “explain this LWC” and it does the obvious thing: opens the
+      component, opens the template, opens the Apex controller behind it, opens
+      the data-access class behind <em>that</em>. Four files, read end to end, to
+      answer a question that touches maybe thirty lines.
+    </p>
+    <p>
+      The waste isn't a one-time charge. Everything pulled into context gets
+      <strong>re-read on every subsequent turn</strong> of the conversation. One
+      unnecessary file read early keeps charging rent for the rest of the
+      session. That compounding is the real cost, not the initial read.
+    </p>
+    <p>
+      CodeGlance's whole premise is that an agent should be able to ask a narrow
+      question and get a narrow answer — a signature, a line range, a list of
+      locations — without loading the file that contains them.
+    </p>
+  </div>
+</section>
+
+<section>
+  <div class="prose">
+    <h2>How it works</h2>
+    <p class="sub">Four stages. No compression, no model, no network.</p>
+  </div>
+
+  <div class="pipe">
+    <div class="stage">
+      <div class="n">Stage 1</div>
+      <h4>Index</h4>
+      <p>Every file is parsed once into symbols and imports, cached on disk in <code>.codeglance/</code>. Re-running only re-parses files whose mtime changed.</p>
+    </div>
+    <div class="stage">
+      <div class="n">Stage 2</div>
+      <h4>Mask</h4>
+      <p>Each line is scanned with a string/comment lexer before any pattern matching, so text that merely <em>looks</em> like code — prose in a template literal — is never indexed as code.</p>
+    </div>
+    <div class="stage">
+      <div class="n">Stage 3</div>
+      <h4>Retrieve</h4>
+      <p>Nineteen tools read the index and the files, returning outlines, ranges, and <code>path:line:col</code> locations rather than file contents.</p>
+    </div>
+    <div class="stage">
+      <div class="n">Stage 4</div>
+      <h4>Budget</h4>
+      <p>Every response is bounded. Caps are opt-in and explicit, and any cap that trips says so out loud rather than truncating silently.</p>
+    </div>
+  </div>
+
+  <div class="prose">
+    <div class="note">
+      <strong>Why masking matters.</strong> Before this existed, CodeGlance
+      indexed its own instructions string: the phrase “the <em>functions</em> you
+      actually need” matched a declaration rule and got filed as a function named
+      <code>s</code>. On its own source that inflated 82 real symbols to 132. A
+      tool built to remove noise was manufacturing it.
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="prose">
+    <h2>One real question, measured both ways</h2>
+    <p class="sub">“Explain this LWC” — <code>achLpDashboard</code>, from the Apex Capital Hub org.</p>
+    <p>
+      The component wires two Apex methods, renders an LP's financial summary,
+      and computes a handful of derived totals. To explain it you need to know
+      what it wires, what those methods return, and how the derived values are
+      built. Here is what each path actually pulls in.
+    </p>
+  </div>
+
+  <div class="versus">
+    <div class="col without">
+      <h3>Without CodeGlance</h3>
+      <ul>
+        <li>achLpDashboard.js <span>— 99 lines, 2,861 ch</span></li>
+        <li>achLpDashboard.html <span>— 136 lines, 8,297 ch</span></li>
+        <li>ACH_LPPortalController.cls <span>— 104 lines, 3,922 ch</span></li>
+        <li>ACH_LPDataAccess.cls <span>— 135 lines, 5,628 ch</span></li>
+      </ul>
+      <div class="tot">20,708 chars · ≈ 5,200 tokens</div>
+    </div>
+    <div class="col with">
+      <h3>With CodeGlance</h3>
+      <ul>
+        <li>outline_file <span>— the component's 14 members</span></li>
+        <li>dep_graph imports <span>— what it wires</span></li>
+        <li>get_file_skeleton <span>— the Apex controller's shape</span></li>
+        <li>get_context <span>— one method + its callers</span></li>
+        <li>read_lines 14–46 <span>— only the wired handlers</span></li>
+      </ul>
+      <div class="tot">2,709 chars · ≈ 680 tokens</div>
+    </div>
+  </div>
+
+  <div class="bars">
+    <div class="bar-row">
+      <div class="lbl">read the files</div>
+      <div class="bar b-without" style="width:100%">20,708 chars</div>
+    </div>
+    <div class="bar-row">
+      <div class="lbl">ask precisely</div>
+      <div class="bar b-with" style="width:13.1%">2,709</div>
+    </div>
+  </div>
+  <p class="cost">Same question, same five answers available. ~7.6× less context, and the agent still sees every line it actually reasons about.</p>
+
+  <div class="prose">
+    <div class="note warn">
+      <strong>Read the number honestly.</strong> That's one task on one repo,
+      measured once. A whole session shrinks far less — earlier A/B runs put it
+      near <strong>29%</strong> — because most of a session is fixed overhead
+      (system prompt, tool definitions, project files) that CodeGlance never
+      touches. It only shaves the file-reading slice. The per-task number is real;
+      it just isn't the number on your bill.
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="prose">
+    <h2>The nineteen tools</h2>
+    <p class="sub">Grouped by the job they do, not alphabetically. Every output below is real, captured against the Apex Capital Hub repo.</p>
+  </div>
+
+  <div class="grouphead">
+    <h3>Orient</h3>
+    <span class="job">where am I, and what's here</span>
+  </div>
+
+  <div class="tool">
+    <div class="tool-head"><h4>index_repo</h4><span class="tag">run it liberally</span></div>
+    <p>Builds or refreshes the symbol and import index. Only files whose mtime changed are re-parsed, so this is closer to <code>git fetch</code> than to a setup step — re-run it any time something else may have touched the repo.</p>
+    <div class="callline">index_repo</div>
+<pre>Indexed 56 files under C:\Users\you\Desktop\mystart-main
+  parsed: 0  reused(cache): 56  removed: 0
+  symbols indexed: 344  parser: regex
+  config: no .codeglance.json (defaults)</pre>
+    <p class="cost">246 chars · note <span style="color:var(--teal)">reused(cache): 56</span> — a refresh that parsed nothing</p>
+  </div>
+
+  <div class="tool">
+    <div class="tool-head"><h4>repo_map</h4><span class="tag">start here</span></div>
+    <p>Directory-level counts, then <code>path:</code> drills into one directory and lists its largest files. Two calls take you from “what is this repo” to “which file do I want”, without opening anything.</p>
+    <div class="callline">repo_map { depth: 2 }</div>
+<pre>force-app/main       54 files    5322 lines    342 symbols
+eslint.config.js      1 files      55 lines      0 symbols
+jest.config.js        1 files       7 lines      0 symbols</pre>
+    <div class="callline" style="margin-top:.7rem">repo_map { path: "force-app/main/default/lwc", top: 10 }</div>
+<pre>force-app/main/default/lwc: 7 files, 1080 lines (largest first)
+  gameLeaderboard/gameLeaderboard.js    278 lines     5 symbols
+  gameList/gameList.js                  224 lines     9 symbols
+  gameCard/gameCard.js                  170 lines    14 symbols
+  achLpDashboard/achLpDashboard.js      100 lines    14 symbols</pre>
+    <p class="cost">433 + 678 chars</p>
+  </div>
+
+  <div class="grouphead">
+    <h3>Narrow</h3>
+    <span class="job">a file, without the file</span>
+  </div>
+
+  <div class="tool">
+    <div class="tool-head"><h4>outline_file</h4></div>
+    <p>Every declaration in one file with its line number. This is the “explain this LWC” starting move: the component's entire shape, for a fraction of reading it.</p>
+    <div class="callline">outline_file { path: ".../achLpDashboard/achLpDashboard.js" }</div>
+<pre>achLpDashboard.js (100 lines, 14 declarations)
+      6  class     export default class AchLpDashboard extends LightningElement {
+     17  method    wiredFinancialSummary(result) {
+     30  method    wiredInvestorDetails(result) {
+     41  method    checkLoadingComplete() {
+     48  method    get totalOutstanding() {
+     52  method    get totalDistributions() {
+     56  method    get netCashFlow() {
+     60  method    get netCashFlowClass() {
+     65  method    get investorName() {
+     69  method    get investorType() {
+     73  method    get commitments() {
+     77  method    get hasCommitments() {
+     81  method    formatCurrency(value) {
+     90  method    handleRefresh() {</pre>
+    <p class="cost">729 chars vs 2,861 to read the file — and you now know exactly which lines you want</p>
+  </div>
+
+  <div class="tool">
+    <div class="tool-head"><h4>get_file_skeleton</h4><span class="tag">before any big read</span></div>
+    <p>Signatures with bodies elided and nesting preserved. Use it before reading anything over ~300 lines.</p>
+    <div class="callline">get_file_skeleton { path: ".../classes/ACH_LPPortalController.cls" }</div>
+<pre>ACH_LPPortalController.cls skeleton (105 lines, 6 symbols):
+public with sharing class ACH_LPPortalController … {8}
+    public static List&lt;SK_ACH_Capital_Call_Line__c&gt; getCapitalCallLines() … {15}
+    public static List&lt;SK_ACH_Distribution_Line__c&gt; getDistributionLines() … {28}
+    public static Map&lt;String, Decimal&gt; getFinancialSummary() … {41}
+    public static InvestorWrapper getInvestorDetails() … {62}
+    public class InvestorWrapper … {100}</pre>
+    <p class="cost">479 chars vs 3,922 — an 8× reduction on this one file</p>
+  </div>
+
+  <div class="tool">
+    <div class="tool-head"><h4>read_lines</h4></div>
+    <p>Exactly the range you ask for, numbered. The outline told you the wired handlers live at 14–46; this fetches only those.</p>
+    <div class="callline">read_lines { path: ".../achLpDashboard.js", start: 14, end: 46 }</div>
+<pre>achLpDashboard.js [14-46 of 100]
+   16      @wire(getFinancialSummary)
+   17      wiredFinancialSummary(result) {
+   18          this.wiredSummaryResult = result;
+   19          if (result.data) {
+   20              this.financialSummary = result.data;
+   21              this.checkLoadingComplete();
+   ...
+   41      checkLoadingComplete() {
+   42          if (this.financialSummary &amp;&amp; this.investorDetails) {
+   43              this.isLoading = false;</pre>
+    <p class="cost">1,212 chars — the only full source in the whole workflow</p>
+  </div>
+
+  <div class="tool">
+    <div class="tool-head"><h4>get_symbol_context</h4></div>
+    <p>One symbol's body with a couple of lines of padding. The padding stops before the next declaration, so a request for one method can't spill the following one into your context.</p>
+    <div class="callline">get_symbol_context { name: "getMyCommitmentIds" }</div>
+<pre>ACH_LPDataAccess.cls:74  method  (23 LOC)
+   74      private static Set&lt;Id&gt; getMyCommitmentIds() {
+   75          Set&lt;Id&gt; commitmentIds = new Set&lt;Id&gt;();
+   76          Id currentUserId = UserInfo.getUserId();
+   79          List&lt;SK_ACH_Investor__c&gt; myInvestors = [SELECT Id
+   80                                          FROM SK_ACH_Investor__c
+   81                                          WHERE SK_ACH_Portal_User__c = :currentUserId
+   82                                          LIMIT 1];
+   89          for (SK_ACH_Commitment__c comm : [SELECT Id ... ]) {
+   92              commitmentIds.add(comm.Id);
+   96      }</pre>
+    <p class="cost">1,292 chars vs 5,628 for the containing file</p>
+  </div>
+
+  <div class="grouphead">
+    <h3>Navigate</h3>
+    <span class="job">follow a symbol, don't grep for it</span>
+  </div>
+
+  <div class="tool">
+    <div class="tool-head"><h4>search_symbols</h4><span class="tag">index-only</span></div>
+    <p>Fuzzy name lookup ranked exact → prefix → substring → subsequence. It reads the index and never touches a file, which makes it far cheaper and far less noisy than text search for finding a declaration.</p>
+    <div class="callline">search_symbols { query: "commitment" }</div>
+<pre>12 of 12 symbol(s) matching "commitment":
+  achLpDashboard.js:73:9              method   commitments
+  CommitmentTriggerHandler.cls:4:27   class    CommitmentTriggerHandler
+  raiseFunds.js:59:5                  method   createCommitment
+  ACH_LPDataAccess.cls:74:28          method   getMyCommitmentIds
+  CapitalCallLineTriggerHandler.cls:6 method   updateCommitmentTotals
+  ACH_InvestorSharingHandler.cls:44   method   shareCommitmentsWithPortalUsers</pre>
+    <p class="cost">Apex and LWC in one ranked list — 1,295 chars</p>
+  </div>
+
+  <div class="tool">
+    <div class="tool-head"><h4>search_code</h4></div>
+    <p>Real text search, with a caret under the hit, exact totals, and opaque-cursor pagination. Reserve it for strings; for anything symbol-shaped the index tools are better.</p>
+    <div class="callline">search_code { pattern: "with sharing", limit: 4, highlight: true }</div>
+<pre>4 of 22 match(es)
+ACH_InvestorSharingHandler.cls:8:8
+    public with sharing class ACH_InvestorSharingHandler {
+           ^^^^^^^^^^^^
+ACH_LPDataAccess.cls:8:8
+    public with sharing class ACH_LPDataAccess {
+           ^^^^^^^^^^^^
+next cursor: eyJvIjo0LCJ2IjoiMjAyNi0wNy0yMVQxNjoyOToyNS40ODhaIn0</pre>
+    <p class="cost">“4 of 22” is an exact total, not a guess — 656 chars</p>
+  </div>
+
+  <div class="tool">
+    <div class="tool-head"><h4>find_definition</h4></div>
+    <p>Go-to-definition without loading files. When a name is ambiguous it says so and lists every candidate rather than picking one.</p>
+    <div class="callline">find_definition { name: "updateCommitmentTotals" }</div>
+<pre>2 definition candidate(s) for "updateCommitmentTotals":
+CapitalCallLineTriggerHandler.cls:6:24   method updateCommitmentTotals
+DistributionLineTriggerHandler.cls:6:24  method updateCommitmentTotals</pre>
+    <p class="cost">258 chars — and the ambiguity is surfaced, not hidden</p>
+  </div>
+
+  <div class="tool">
+    <div class="tool-head"><h4>find_references</h4></div>
+    <p>Every reference as <code>path:line:col</code>, attributed to the enclosing function or class. This is the one that pays for itself on Salesforce: it traces an <code>@AuraEnabled</code> method from the Apex controller into the LWC that wires it.</p>
+    <div class="callline">find_references { name: "getFinancialSummary" }</div>
+<pre>4 of 4 reference(s) to "getFinancialSummary":
+  ACH_LPPortalController.cls:41:40   in method getFinancialSummary
+  achLpDashboard.js:2:8
+  achLpDashboard.js:2:74
+  achLpDashboard.js:16:11           <span class="hi">in class AchLpDashboard</span></pre>
+    <p class="cost">369 chars · <em>textual</em> matching — same-named symbols from unrelated files can appear</p>
+  </div>
+
+  <div class="tool">
+    <div class="tool-head"><h4>get_context</h4><span class="tag">the headline tool</span></div>
+    <p>One call assembling definition, signature, callers, imports and dependents. Sections are opt-in via <code>include</code>, callers capped by <code>callerLimit</code>, the whole thing bounded by <code>maxChars</code>. It replaces roughly five separate lookups.</p>
+    <div class="callline">get_context { name: "getFinancialSummary", include: ["definition","signature","callers"] }</div>
+<pre># Context for "getFinancialSummary"
+
+## Definition
+  ACH_LPPortalController.cls:41:40  method
+
+## Signature  (15 LOC at ACH_LPPortalController.cls:41)
+  public static Map&lt;String, Decimal&gt; getFinancialSummary() {
+
+## Callers / references — heuristic (showing 2 of 2)
+  achLpDashboard.js:2
+  achLpDashboard.js:16  in class AchLpDashboard</pre>
+    <p class="cost">526 chars for the Apex definition <em>and</em> its LWC call sites</p>
+  </div>
+
+  <div class="tool">
+    <div class="tool-head"><h4>dep_graph</h4><span class="tag">before refactoring</span></div>
+    <p>What a file imports, what imports it, or a Mermaid diagram walked outward from a root. Graph notation compresses relationships far better than prose. Run it before touching a shared module to see the blast radius.</p>
+    <div class="callline">dep_graph { mode: "mermaid", root: "src/index.ts", depth: 2 }</div>
+<pre>graph LR
+  n0["src/index.ts"] --&gt; n2["src/indexer.ts"]
+  n0["src/index.ts"] --&gt; n5["src/intel.ts"]
+  n0["src/index.ts"] --&gt; n8["src/store.ts"]
+  n1["src/outline.ts"] --&gt; n9["src/lexer.ts"]
+  n2["src/indexer.ts"] --&gt; n10["src/parser.ts"]
+  n5["src/intel.ts"] --&gt; n9["src/lexer.ts"]
+  n8["src/store.ts"] --&gt; n11["src/symbols.ts"]</pre>
+    <div class="note warn" style="margin-top:.9rem">
+      <strong>Honest limit.</strong> On the Salesforce repo this returns
+      <em>“No internal edges in scope”</em> — Apex has no import statements, so
+      there is no file-level graph to build. It works on JS/TS, Python and Rust;
+      on Apex, <code>find_references</code> is the tool that does this job.
+    </div>
+  </div>
+
+  <div class="grouphead">
+    <h3>Track</h3>
+    <span class="job">state across calls and sessions</span>
+  </div>
+
+  <div class="tool">
+    <div class="tool-head"><h4>changed_files</h4><span class="tag">needs git</span></div>
+    <p>The working-tree diff as changed files plus <strong>the symbols each hunk lands in</strong> — blast radius without pulling the patch into context. The cheapest way to start a session on a dirty repo.</p>
+    <div class="callline">changed_files</div>
+<pre>No changes vs HEAD.
+
+<span class="c"># on a non-git directory it says so plainly:</span>
+C:\Users\you\Desktop\mystart-main is not a git repository
+(or git is not installed).</pre>
+  </div>
+
+  <div class="tool">
+    <div class="tool-head"><h4>batch</h4></div>
+    <p>Several independent calls in one request, cutting per-call protocol overhead. Cannot nest inside itself.</p>
+    <div class="callline">batch { calls: [ {tool:"find_definition", args:{name:"getFinancialSummary"}}, {tool:"search_symbols", args:{query:"Distribution"}} ] }</div>
+<pre>### find_definition {"name":"getFinancialSummary"}
+1 definition candidate(s):
+ACH_LPPortalController.cls:41:40  method getFinancialSummary
+
+### search_symbols {"query":"Distribution"}
+12 of 12 symbol(s) matching "Distribution":
+  DistributionTriggerHandler.cls:4:27       class    DistributionTriggerHandler
+  ACH_LPDataAccess.cls:121:27               method   getMyTotalDistributions
+  ACH_InvestorSharingHandler.cls:119:24     method   shareDistributionLines…</pre>
+    <p class="cost">1,623 chars, one round trip instead of two</p>
+  </div>
+
+  <div class="tool">
+    <div class="tool-head"><h4>memory_save · memory_search · memory_list · memory_delete</h4></div>
+    <p>Durable notes in <code>.codeglance/memory.json</code>, per repository. Decisions and gotchas that aren't derivable from the code survive a restart, so the next session starts informed instead of rediscovering them.</p>
+    <div class="callline">memory_save { text: "LP sharing is Apex-managed in ACH_InvestorSharingHandler, not declarative", tags: ["arch"] }</div>
+<pre>Saved memory e8847c07 [arch].
+
+<span class="c">$ memory_search { query: "sharing" }</span>
+[e8847c07] (arch) LP sharing is Apex-managed in
+                  ACH_InvestorSharingHandler, not declarative</pre>
+    <p class="cost">Chat and Code share one store only when both point at the same root</p>
+  </div>
+
+  <div class="tool">
+    <div class="tool-head"><h4>stats</h4></div>
+    <p>Per-tool call counts and response sizes, so you can see which tool is actually producing your context. Reported in <strong>characters, not tokens</strong> — <code>chars/4</code> estimates differ across tokenizers, so it measures only what it can measure honestly.</p>
+    <div class="callline">stats</div>
+<pre>codeglance usage since 2026-07-21T16:25:11Z
+  repo_map            2 calls   1111 chars  avg  556  max  678
+  outline_file        1 calls    729 chars  avg  729  max  729
+  search_symbols      1 calls    309 chars  avg  309  max  309
+  get_file_skeleton   1 calls    301 chars  avg  301  max  301
+  find_definition     1 calls    131 chars  avg  131  max  131
+  TOTAL               9 calls   3111 chars</pre>
+  </div>
+</section>
+
+<section>
+  <div class="prose">
+    <h2>What's inside</h2>
+    <p class="sub">Twelve source files, two runtime dependencies.</p>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr><th>File</th><th>Responsibility</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><code>index.ts</code></td><td>Tool definitions and the MCP server. Each tool is registered through one wrapper that adds terse error handling and records response size.</td></tr>
+        <tr><td><code>lexer.ts</code></td><td>The shared line lexer — brace counting, string/comment masking, depth tracking. Its own module because <code>store</code> imports <code>symbols</code>, so <code>symbols</code> importing <code>intel</code> would close a cycle.</td></tr>
+        <tr><td><code>symbols.ts</code></td><td>Declaration and import extraction across JS/TS, Python, Go, Rust, Java/C#, Apex, Ruby.</td></tr>
+        <tr><td><code>outline.ts</code></td><td>The outliner. A second, independent set of rules — a bug fixed in one must be fixed in both.</td></tr>
+        <tr><td><code>intel.ts</code></td><td>Block extraction, skeletons, enclosing-symbol attribution, and the <code>get_context</code> aggregator.</td></tr>
+        <tr><td><code>indexer.ts</code></td><td>File walking, ignore rules, extension list, <code>.codeglance.json</code> config loading.</td></tr>
+        <tr><td><code>store.ts</code></td><td>On-disk index and memory. Holds the index format version that invalidates stale caches wholesale.</td></tr>
+        <tr><td><code>graph.ts</code></td><td>Import resolution and the dependency graph, including Mermaid output.</td></tr>
+        <tr><td><code>search.ts</code></td><td>Text search, caret highlighting, cursor pagination.</td></tr>
+        <tr><td><code>parser.ts</code></td><td>The <code>Parser</code> interface seam. Regex is the only backend that ships; a tree-sitter backend drops in here without touching a tool or the index format.</td></tr>
+        <tr><td><code>git.ts</code></td><td><code>changed_files</code> — diff summary with symbol attribution.</td></tr>
+        <tr><td><code>stats.ts</code>, <code>watch.ts</code></td><td>Usage counters; opt-in auto-reindex on file save.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section>
+  <div class="prose">
+    <h2>Languages and scale</h2>
+    <p class="sub">Both measured, both pinned by tests.</p>
+    <p>
+      Twelve languages, checked against a fixture each and counting the
+      declarations a developer would actually navigate to:
+      <strong>65/65 found, zero false positives</strong>. Four of them — PHP,
+      Kotlin, Swift, Scala — were in the extension list with no rules behind them
+      until this was measured, so those files had been indexing to nothing.
+    </p>
+    <p>
+      Framework code was the real test. Against a live fflib org — Application
+      factory, Domain, Selector, Service, Unit of Work — all
+      <strong>129 declarations</strong> across the framework extract cleanly,
+      including constructors, static factories, inner classes and
+      <code>@AuraEnabled</code> methods. The gap it exposed: bare interface
+      declarations like <code>void createAccounts(List&lt;Account&gt; accs);</code>
+      have no modifier and no body, and interface-heavy frameworks are mostly
+      made of those.
+    </p>
+  </div>
+
+  <div class="tablewrap" style="margin-bottom:1.2rem">
+    <table>
+      <thead><tr><th>Repo</th><th class="num">Files</th><th class="num">Symbols</th><th class="num">Cold index</th><th class="num">Warm</th><th class="num">Typical query</th></tr></thead>
+      <tbody>
+        <tr><td>Salesforce DX org</td><td class="num">56</td><td class="num">352</td><td class="num">0.1 s</td><td class="num">15 ms</td><td class="num">&lt; 10 ms</td></tr>
+        <tr><td>Java + React app</td><td class="num">356</td><td class="num">1,713</td><td class="num">0.42 s</td><td class="num">26 ms</td><td class="num">3–57 ms</td></tr>
+        <tr><td>Synthetic stress</td><td class="num">5,000</td><td class="num">50,000</td><td class="num">1.5 s</td><td class="num">0.24 s</td><td class="num">5–22 ms</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="prose">
+    <div class="note">
+      <strong>The bottleneck was self-inflicted.</strong> Every tool call
+      re-read and re-parsed the whole index from disk — ten call sites, no cache.
+      On the 5,000-file repo that's a 3.8 MB <code>JSON.parse</code> per call,
+      about 20 ms of dead weight that grew with the repo. Now held in memory and
+      invalidated by mtime: <code>find_definition</code> went 19 ms → 5 ms.
+      <code>find_references</code> stays ~0.7 s at that size because it is a
+      textual scan of every file rather than an index lookup — scope it with
+      <code>pathPrefix</code>.
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="prose">
+    <h2>Where it's weak</h2>
+    <p>
+      Extraction is <strong>regex heuristics, not a parser</strong>. It is fast,
+      dependency-free and works offline; it is also less precise than a language
+      server, and <code>find_references</code> matches text, so a common method
+      name will return unrelated hits. That trade was deliberate — grammars would
+      cost the “installs instantly, runs offline” property that is the point —
+      but it is a trade, not a free win.
+    </p>
+    <p>
+      Three known gaps: <code>dep_graph</code> has nothing to draw on Apex, which
+      has no imports. An inline Python <code>#</code> comment containing a brace
+      can still confuse block extraction. And <code>watch.ts</code>, config
+      loading and <code>changed_files</code> have no automated tests — everything
+      else is covered by 114 tests, including an end-to-end suite that drives the
+      real server over stdio.
+    </p>
+    <div class="note">
+      <strong>Using it with Copilot?</strong> The retrieval discipline ships
+      through MCP's <code>instructions</code> channel, and not every client
+      injects that into the model's context. If yours doesn't, the agent sees
+      nineteen unfamiliar tools with no idea when to prefer a skeleton over a
+      read — and quietly falls back to reading files. Putting the same guidance
+      in <code>.github/copilot-instructions.md</code> is the reliable backstop.
+    </div>
+  </div>
+</section>
+
+<hr>
+<footer>
+  <p>
+    codeglance-mcp v0.7.0 · MIT © 2026 Kael VK Inc. · All outputs on this page
+    captured from the running server against real repositories, not illustrative.
+    Character counts are exact; token figures are <code>chars/4</code> approximations.
+  </p>
+</footer>
+
+</div>
