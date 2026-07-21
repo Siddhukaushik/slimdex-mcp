@@ -81,7 +81,7 @@ MEMORY — this is what makes a new chat start informed instead of blank:
 // ---------------------------------------------------------------------------
 type Handler = (args: any) => Promise<string>;
 const handlers: Record<string, Handler> = {};
-const server = new McpServer({ name: "codeglance", version: "0.7.0" }, { instructions: INSTRUCTIONS });
+const server = new McpServer({ name: "codeglance", version: "0.8.0" }, { instructions: INSTRUCTIONS });
 
 function tool(name: string, meta: { title: string; description: string; inputSchema: any }, fn: Handler) {
   handlers[name] = fn;
@@ -641,7 +641,7 @@ tool(
 // ---------------------------------------------------------------------------
 async function main() {
   await server.connect(new StdioServerTransport());
-  console.error(`codeglance-mcp v0.7.0 ready. root=${ROOT}  tools=${Object.keys(handlers).length}`);
+  console.error(`codeglance-mcp v0.8.0 ready. root=${ROOT}  tools=${Object.keys(handlers).length}`);
   // Opt-in auto-reindex on file change. Off unless CODEGLANCE_WATCH is truthy.
   if (["1", "true", "yes"].includes((process.env.CODEGLANCE_WATCH || "").toLowerCase())) {
     const { startWatcher } = await import("./watch.js");

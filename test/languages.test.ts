@@ -255,3 +255,53 @@ describe("framework idioms (fflib, Spring, DI-style code)", () => {
     expect(names(src).filter((n) => n === "Application").length).toBe(2); // class + constructor
   });
 });
+
+describe("real-world JS shapes (found by auditing node_modules)", () => {
+  it("finds a function expression assigned to a variable", () => {
+    // The single most-missed shape across ~12,000 real framework files:
+    // arrows were handled, `= function` was not.
+    expect(names("var slc = function (v, s, e) {\n};")).toContain("slc");
+  });
+
+  it("finds prototype and exports assignments", () => {
+    const src = [
+      "Foo.prototype.render = function () {};",
+      "exports.parse = function (s) {};",
+      "module.exports.stringify = async function (o) {};",
+    ].join("\n");
+    expectAll(src, ["render", "parse", "stringify"]);
+  });
+
+  it("finds function-valued properties in an object literal", () => {
+    const src = ["const opts = {", "  onSuccess: function (res) {},", "  onError: async function (e) {},", "};"].join("\n");
+    expectAll(src, ["onSuccess", "onError"]);
+  });
+
+  it("does not mistake a call to something merely starting with 'function'", () => {
+    expect(names("const x = functionCall(1);")).not.toContain("x");
+  });
+});
+
+describe("test DSLs", () => {
+  it("indexes test titles, which are a test file's real navigable units", () => {
+    const src = [
+      'describe("Invoice totals", () => {',
+      '  it("sums line items", () => {});',
+      '  test("handles empty", () => {});',
+      "});",
+    ].join("\n");
+    const got = extractSymbols(src).filter((s) => s.kind === "test").map((s) => s.name);
+    expect(got).toEqual(["Invoice totals", "sums line items", "handles empty"]);
+  });
+
+  it("reads the title from the raw line even though masking blanks strings", () => {
+    // The title lives inside a string literal, which masking blanks — so this
+    // rule matches the original line. Without that it captured only spaces.
+    const got = extractSymbols('test("literal string correct", () => {});');
+    expect(got[0].name).toBe("literal string correct");
+  });
+
+  it("ignores a commented-out test", () => {
+    expect(extractSymbols('// test("disabled case", () => {});').length).toBe(0);
+  });
+});

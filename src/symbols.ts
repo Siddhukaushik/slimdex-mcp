@@ -26,6 +26,12 @@ interface Rule {
   // buries the real declarations in noise, which is the opposite of this
   // server's job — so these rules only fire at depth 0.
   topLevelOnly?: boolean;
+  // Match against the original line rather than the masked one. Only for rules
+  // whose captured name is deliberately *inside* a string literal — a test
+  // title — where masking would blank the very thing being captured. The line
+  // is still skipped if masking shows it is entirely comment or string, so a
+  // commented-out test doesn't get indexed.
+  rawCapture?: boolean;
 }
 
 // A bare `name(args) {` line is indistinguishable from `if (cond) {` by shape
@@ -55,6 +61,26 @@ const RULES: Rule[] = [
   // in prose matched, with `\s*` matching empty and `s` captured as the name.
   { kind: "function", re: /\b(?:export\s+)?(?:default\s+)?(?:async\s+)?function\b\s*\*?\s*([A-Za-z0-9_$]+)/ },
   { kind: "function", re: /\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*[:=][^=]*=>/, topLevelOnly: true },
+  // `var slc = function (v, s, e) {` — the function *expression*. Auditing
+  // ~12,000 real framework files showed this as the single most-missed shape:
+  // arrows were handled, this wasn't, and library and transpiled code is full
+  // of it.
+  {
+    kind: "function",
+    re: /\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*=\s*(?:async\s+)?function\b/,
+    topLevelOnly: true,
+  },
+  // `Foo.prototype.bar = function () {}`, `exports.render = function () {}`,
+  // `obj.method = async function () {}` — assignment to a property. Ubiquitous
+  // in pre-class JS, CommonJS modules and prototype-based libraries.
+  {
+    kind: "function",
+    re: /^\s*(?:[A-Za-z0-9_$]+\.)+([A-Za-z0-9_$]+)\s*=\s*(?:async\s+)?function\b/,
+  },
+  // `render: function (props) {` — a function-valued property in an object
+  // literal, which is how options objects, Vue components and older React
+  // mixins declare their methods.
+  { kind: "method", re: /^\s+([A-Za-z0-9_$]+)\s*:\s*(?:async\s+)?function\b/ },
   // Class / object-literal methods: `async getUser(id): Promise<T> {`, `get name() {`,
   // `constructor(x) {`. Requires leading indentation (methods are always nested)
   // and a trailing `{`, which together with NOT_A_METHOD keeps `if (…) {` out.
@@ -108,6 +134,17 @@ const RULES: Rule[] = [
         "\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s*\\([^;{]*\\)\\s*;\\s*$"
     ),
     reject: NOT_A_METHOD,
+  },
+  // ---- Test DSLs ----
+  // A test file's navigable units are its test names, not its functions — a
+  // vitest/jest/mocha/RSpec suite frequently has zero top-level declarations and
+  // so indexed to nothing at all, which made whole test directories invisible.
+  // `describe`/`it`/`test` are close to universal across JS, TS and Ruby test
+  // frameworks, and the quoted title is the thing a developer searches for.
+  {
+    kind: "test",
+    re: /^\s*(?:export\s+)?(?:describe|it|test|context|suite|bench|scenario|feature)(?:\.\w+)?\s*\(\s*['"`]([^'"`]{1,80})['"`]/,
+    rawCapture: true,
   },
   // ---- Python ----
   { kind: "class", re: /^\s*class\s+([A-Za-z0-9_]+)/ },
@@ -172,12 +209,13 @@ export function extractSymbols(source: string, maxSymbols = 2000): SymbolDef[] {
     if (!masked.trim() || isComment(line)) continue;
 
     for (const rule of RULES) {
-      const m = rule.re.exec(masked);
+      const subject = rule.rawCapture ? line : masked;
+      const m = rule.re.exec(subject);
       if (m && m[1]) {
         const name = m[1];
         if (rule.reject?.has(name)) continue; // keyword, not a declaration — try the next rule
         if (rule.topLevelOnly && depth > 0) continue; // a local, not a declaration
-        const col = masked.indexOf(name, m.index) + 1;
+        const col = subject.indexOf(name, m.index) + 1;
         const key = `${i + 1}:${name}`;
         if (!seen.has(key)) {
           seen.add(key);
