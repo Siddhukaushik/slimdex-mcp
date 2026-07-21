@@ -28,13 +28,13 @@ describe("parser abstraction", () => {
   });
 
   it("falls back to regex for an unknown backend", () => {
-    const prev = process.env.LEANCTX_PARSER;
-    process.env.LEANCTX_PARSER = "treesitter";
+    const prev = process.env.CODEGLANCE_PARSER;
+    process.env.CODEGLANCE_PARSER = "treesitter";
     try {
       expect(getParser().name).toBe("regex");
     } finally {
-      if (prev === undefined) delete process.env.LEANCTX_PARSER;
-      else process.env.LEANCTX_PARSER = prev;
+      if (prev === undefined) delete process.env.CODEGLANCE_PARSER;
+      else process.env.CODEGLANCE_PARSER = prev;
     }
   });
 });

@@ -11,7 +11,7 @@ const serverPath = path.join(process.cwd(), "dist", "index.js");
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [serverPath],
-  env: { ...process.env, LEANCTX_ROOT: root },
+  env: { ...process.env, CODEGLANCE_ROOT: root },
 });
 const client = new Client({ name: "smoke", version: "1.0.0" });
 await client.connect(transport);
@@ -31,7 +31,7 @@ await call("repo_map", { path: "src", top: 5 });
 await call("search_code", { pattern: "function", limit: 4, highlight: true });
 await call("search_symbols", { query: "context" });
 await call("changed_files", {});
-await call("memory_save", { text: "leanctx smoke test ran", tags: ["test"] });
+await call("memory_save", { text: "codeglance smoke test ran", tags: ["test"] });
 await call("memory_list", {});
 await call("stats", {});
 

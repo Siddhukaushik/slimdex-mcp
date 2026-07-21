@@ -1,4 +1,4 @@
-// On-disk persistence. Everything lives under <root>/.leanctx/ so it travels
+// On-disk persistence. Everything lives under <root>/.codeglance/ so it travels
 // with the repo and survives restarts. Two files:
 //   index.json   - the code symbol/import index, invalidated per-file by mtime
 //   memory.json  - freeform memory facts the agent chooses to remember
@@ -36,7 +36,7 @@ export interface MemoryStore {
 }
 
 function dir(root: string): string {
-  return path.join(root, ".leanctx");
+  return path.join(root, ".codeglance");
 }
 
 async function ensureDir(root: string): Promise<void> {

@@ -1,7 +1,7 @@
 {
-  "name": "leanctx-mcp",
+  "name": "codeglance-mcp",
   "version": "0.5.0",
-  "description": "A local MCP server that reduces token usage for coding agents by returning code outlines, surgical symbol context, a dependency graph, and persistent memory instead of whole files.",
+  "description": "A local MCP server for narrow code retrieval: outlines, symbol context, a dependency graph, and persistent memory instead of whole-file reads.",
   "type": "module",
   "keywords": [
     "mcp",
@@ -12,13 +12,13 @@
     "code-intelligence",
     "llm"
   ],
-  "homepage": "https://github.com/Siddhukaushik/leanctx-mcp#readme",
+  "homepage": "https://github.com/Siddhukaushik/codeglance-mcp#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Siddhukaushik/leanctx-mcp.git"
+    "url": "git+https://github.com/Siddhukaushik/codeglance-mcp.git"
   },
   "bin": {
-    "leanctx-mcp": "dist/index.js"
+    "codeglance-mcp": "dist/index.js"
   },
   "files": [
     "dist",

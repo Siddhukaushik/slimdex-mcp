@@ -10,7 +10,7 @@ import { loadIndex, saveIndex, type CodeIndex, type FileEntry } from "./store.js
 const IGNORE_DIRS = new Set([
   ".git", "node_modules", "dist", "build", "out", ".next", ".nuxt", "target",
   "__pycache__", ".venv", "venv", "env", ".idea", ".vscode", "coverage",
-  ".leanctx", ".cache", "vendor", "bin", "obj", ".gradle", ".mvn",
+  ".codeglance", ".cache", "vendor", "bin", "obj", ".gradle", ".mvn",
 ]);
 
 const CODE_EXT = new Set([
@@ -25,7 +25,7 @@ export function toPosix(p: string): string {
   return p.split(path.sep).join("/");
 }
 
-// Optional per-repo config at <root>/.leanctx.json:
+// Optional per-repo config at <root>/.codeglance.json:
 //   { "ignoreDirs": ["fixtures"], "extensions": [".astro"], "exclude": ["generated/"],
 //     "maxFileBytes": 2000000 }
 interface LeanctxConfig {
@@ -35,7 +35,7 @@ interface LeanctxConfig {
   maxFileBytes: number;
   // Reported back to the caller so a typo'd key or malformed JSON is visible in
   // index_repo's output. Silently swallowing config errors made a broken
-  // .leanctx.json indistinguishable from having none at all.
+  // .codeglance.json indistinguishable from having none at all.
   present: boolean;
   warnings: string[];
   summary: string;
@@ -54,22 +54,22 @@ async function loadConfig(root: string): Promise<LeanctxConfig> {
 
   let raw: string;
   try {
-    raw = await fs.readFile(path.join(root, ".leanctx.json"), "utf8");
+    raw = await fs.readFile(path.join(root, ".codeglance.json"), "utf8");
     present = true;
   } catch {
-    return { ignoreDirs, extensions, exclude, maxFileBytes, present: false, warnings, summary: "no .leanctx.json (defaults)" };
+    return { ignoreDirs, extensions, exclude, maxFileBytes, present: false, warnings, summary: "no .codeglance.json (defaults)" };
   }
 
   let cfg: Record<string, unknown>;
   try {
     cfg = JSON.parse(raw);
   } catch (e) {
-    warnings.push(`.leanctx.json is not valid JSON (${(e as Error).message}) — ignoring it and using defaults`);
-    return { ignoreDirs, extensions, exclude, maxFileBytes, present, warnings, summary: "invalid .leanctx.json" };
+    warnings.push(`.codeglance.json is not valid JSON (${(e as Error).message}) — ignoring it and using defaults`);
+    return { ignoreDirs, extensions, exclude, maxFileBytes, present, warnings, summary: "invalid .codeglance.json" };
   }
 
   for (const key of Object.keys(cfg)) {
-    if (!KNOWN_KEYS.has(key)) warnings.push(`unknown key "${key}" in .leanctx.json (known: ${[...KNOWN_KEYS].join(", ")})`);
+    if (!KNOWN_KEYS.has(key)) warnings.push(`unknown key "${key}" in .codeglance.json (known: ${[...KNOWN_KEYS].join(", ")})`);
   }
 
   const asArray = (key: string): unknown[] => {
@@ -103,7 +103,7 @@ async function loadConfig(root: string): Promise<LeanctxConfig> {
   }
 
   const summary =
-    `.leanctx.json loaded (+${added.ignoreDirs} ignoreDirs, +${added.extensions} extensions, ` +
+    `.codeglance.json loaded (+${added.ignoreDirs} ignoreDirs, +${added.extensions} extensions, ` +
     `${added.exclude} exclude rules, maxFileBytes ${maxFileBytes})`;
   return { ignoreDirs, extensions, exclude, maxFileBytes, present, warnings, summary };
 }

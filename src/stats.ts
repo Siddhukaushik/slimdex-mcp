@@ -1,7 +1,7 @@
 // Usage accounting.
 //
 // The README claims this server saves tokens; nothing measured it. This records
-// per-tool call counts and response sizes to <root>/.leanctx/stats.json so the
+// per-tool call counts and response sizes to <root>/.codeglance/stats.json so the
 // claim is checkable and the defaults (callerLimit, maxChars, limit) can be
 // tuned against what actually happens rather than a guess.
 //
@@ -35,7 +35,7 @@ let cache: StatsFile | null = null;
 let flushTimer: NodeJS.Timeout | null = null;
 
 function file(root: string): string {
-  return path.join(root, ".leanctx", "stats.json");
+  return path.join(root, ".codeglance", "stats.json");
 }
 
 export async function loadStats(root: string): Promise<StatsFile> {
@@ -96,7 +96,7 @@ export function formatStats(s: StatsFile): string {
     )
     .join("\n");
   return (
-    `leanctx usage since ${s.since}\n${body}\n` +
+    `codeglance usage since ${s.since}\n${body}\n` +
     `  ${"TOTAL".padEnd(20)} ${String(totalCalls).padStart(5)} calls  ${String(total).padStart(9)} chars\n` +
     `(chars, not tokens — see stats.ts for why)`
   );
