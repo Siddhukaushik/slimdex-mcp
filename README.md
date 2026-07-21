@@ -293,4 +293,8 @@ Cline settings → MCP Servers → add:
 
 ## License
 
-MIT
+MIT © 2026 Kael VK Inc. (Business Number 751569161 RC0001) — see [LICENSE](LICENSE).
+
+Provided as is, with no warranty and no support. If it doesn't build, doesn't
+run, or doesn't work on your setup, that's yours to carry — see the disclaimer
+in the license.
