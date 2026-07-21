@@ -1,10 +1,11 @@
 // Minimal smoke test: spins up the server over stdio and calls a few tools
-// against a target repo (default: finance-tracker) to prove the pipeline works.
+// against a target repo to prove the pipeline works end to end.
+//   node smoke-test.mjs [path-to-repo]     (defaults to this repo)
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import path from "node:path";
 
-const root = process.argv[2] || "C:/Users/vvkau/Desktop/finance-tracker";
+const root = path.resolve(process.argv[2] || process.cwd());
 const serverPath = path.join(process.cwd(), "dist", "index.js");
 
 const transport = new StdioClientTransport({
@@ -26,9 +27,13 @@ async function call(name, args) {
 
 await call("index_repo", {});
 await call("repo_map", { depth: 2 });
-await call("search_code", { pattern: "function", maxMatches: 4, highlight: true });
+await call("repo_map", { path: "src", top: 5 });
+await call("search_code", { pattern: "function", limit: 4, highlight: true });
+await call("search_symbols", { query: "context" });
+await call("changed_files", {});
 await call("memory_save", { text: "leanctx smoke test ran", tags: ["test"] });
 await call("memory_list", {});
+await call("stats", {});
 
 await client.close();
 process.exit(0);

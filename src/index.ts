@@ -4,8 +4,8 @@
 // Instead of reading whole files into context, an agent asks leanctx for exactly
 // what it needs: an outline, a compact search, a ranged read, a surgical symbol
 // snippet, a file skeleton, a one-shot context brief, a symbol index for
-// jump-to-definition, a dependency graph, and a persistent memory store.
-// Everything is cached under <root>/.leanctx/.
+// jump-to-definition, a dependency graph, a git change summary, and a persistent
+// memory store. Everything is cached under <root>/.leanctx/.
 //
 // Transport is stdio, so it works with ANY MCP client (Claude Desktop, Claude
 // Code, Cursor, Windsurf, VS Code/Copilot, Cline, Zed, ...). See README.
@@ -22,6 +22,8 @@ import { buildOrRefresh, toPosix } from "./indexer.js";
 import { searchFiles, formatMatches, encodeCursor, decodeCursor } from "./search.js";
 import { buildGraph, dependents, toMermaid } from "./graph.js";
 import { fileSkeleton, getSymbolContext, buildContext, enclosingSymbol } from "./intel.js";
+import { changedFiles, formatChanged, isGitRepo } from "./git.js";
+import { loadStats, formatStats, record, resetStats } from "./stats.js";
 import { loadIndex, loadMemory, saveMemory, type MemoryFact } from "./store.js";
 
 const ROOT = path.resolve(process.env.LEANCTX_ROOT || process.argv[2] || process.cwd());
@@ -38,23 +40,49 @@ function safeResolve(p: string): string {
   return abs;
 }
 
+// The retrieval discipline that actually produces the savings. It lived only in
+// the README, where no agent ever reads it; MCP clients inject `instructions`
+// into the model's context, so shipping it here means every client gets it.
+const INSTRUCTIONS = `leanctx replaces "read the whole file" with narrow retrieval. To actually save tokens:
+
+1. Start with repo_map, not a file open. On a big repo, orient at the directory level before drilling in.
+2. Run index_repo liberally — it only reparses files whose mtime changed, so treat it like \`git fetch\`,
+   not a one-time setup step. Re-run it before trusting a search if anything else may have touched the repo.
+3. get_file_skeleton before any full read of a file over ~300 lines, then read_lines only the 2-3
+   functions you actually need.
+4. For anything symbol-shaped use find_definition / find_references / get_symbol_context, not search_code.
+   Plain text search on a large codebase returns same-named identifiers from unrelated files.
+   Reserve search_code for real string/text searches.
+5. Prefer one get_context(name, include:[...]) over chaining find_definition + find_references + dep_graph.
+6. Scope search_code and find_references with pathPrefix when you already know the rough area.
+7. Before refactoring a shared module, run dep_graph mode:"mermaid" root:"<file>" to see the blast radius.
+8. changed_files is the cheap way to start a session on a dirty repo — it reports which symbols the diff
+   lands in, without pulling the patch into context.
+9. batch several lookups into one call when they're independent.`;
+
 // ---------------------------------------------------------------------------
 // Handler registry. Each handler returns a plain string. Registering through
 // `tool()` wraps it with terse error handling (no stack traces leak to the
-// model) and records it so the `batch` tool can dispatch to it too.
+// model), records response size for the `stats` tool, and registers it so the
+// `batch` tool can dispatch to it too.
 // ---------------------------------------------------------------------------
 type Handler = (args: any) => Promise<string>;
 const handlers: Record<string, Handler> = {};
-const server = new McpServer({ name: "leanctx", version: "0.4.0" });
+const server = new McpServer({ name: "leanctx", version: "0.5.0" }, { instructions: INSTRUCTIONS });
 
 function tool(name: string, meta: { title: string; description: string; inputSchema: any }, fn: Handler) {
   handlers[name] = fn;
   server.registerTool(name, meta, async (args: any) => {
+    let out: string;
+    let failed = false;
     try {
-      return text(await fn(args ?? {}));
+      out = await fn(args ?? {});
     } catch (e) {
-      return text(`Err: ${(e as Error).message}`); // terse: model doesn't debug our server
+      out = `Err: ${(e as Error).message}`; // terse: model doesn't debug our server
+      failed = true;
     }
+    void record(ROOT, name, out.length, failed);
+    return text(out);
   });
 }
 
@@ -65,16 +93,22 @@ tool(
     title: "Index / refresh the repository",
     description:
       "Build or incrementally refresh the persistent code index (symbols + imports). Only files whose mtime changed " +
-      "are re-parsed. Run first, or after large edits. Honors <root>/.leanctx.json (ignoreDirs/extensions/exclude).",
+      "are re-parsed, so this is cheap — re-run it liberally, like `git fetch`, before trusting a search. Honors " +
+      "<root>/.leanctx.json (ignoreDirs/extensions/exclude/maxFileBytes) and reports config problems instead of " +
+      "silently ignoring them.",
     inputSchema: { force: z.boolean().optional().describe("Ignore cache and reparse everything.") },
   },
   async ({ force }) => {
     const r = await buildOrRefresh(ROOT, force ?? false);
     const symbols = Object.values(r.index.files).reduce((n, f) => n + f.symbols.length, 0);
+    const warn = r.warnings.length ? `\n  config warnings:\n${r.warnings.map((w) => "    ! " + w).join("\n")}` : "";
     return (
       `Indexed ${r.totalFiles} files under ${ROOT}\n` +
-      `  parsed: ${r.parsed}  reused(cache): ${r.reused}  removed: ${r.removed}\n` +
-      `  symbols indexed: ${symbols}\nCache: ${path.join(ROOT, ".leanctx", "index.json")}`
+      `  parsed: ${r.parsed}  reused(cache): ${r.reused}  removed: ${r.removed}` +
+      (r.skipped ? `  skipped(too large): ${r.skipped}` : "") +
+      `\n  symbols indexed: ${symbols}  parser: ${r.parser}\n` +
+      `  config: ${r.config}${warn}\n` +
+      `Cache: ${path.join(ROOT, ".leanctx", "index.json")}`
     );
   }
 );
@@ -115,8 +149,10 @@ tool(
   {
     title: "Compact code search",
     description:
-      "Search indexed files; return path:line:col + the matching line (+ optional caret highlight). Page with limit " +
-      "and either offset or the opaque cursor from a previous call. Vendor/build dirs are already excluded.",
+      "Search indexed files; return path:line:col + the matching line (+ optional caret highlight). Every occurrence " +
+      "on a line counts, and the reported total is exact unless the scan cap trips (then it says so). Page with limit " +
+      "and either offset or the opaque cursor from a previous call. Vendor/build dirs are already excluded. Use " +
+      "pathPrefix to scope; for symbols prefer find_definition/find_references.",
     inputSchema: {
       pattern: z.string(),
       regex: z.boolean().optional(),
@@ -141,19 +177,21 @@ tool(
       const c = decodeCursor(cursor);
       if (!c) return "Err: invalid cursor. Omit it to start from the beginning.";
       start = c.offset;
-      if (c.version && c.version !== index.builtAt) staleNote = " (note: index changed since the cursor was issued; results may have shifted)";
+      if (c.version && c.version !== index.builtAt)
+        staleNote = " (note: index changed since the cursor was issued; results may have shifted)";
     }
 
-    const { matches, total } = await searchFiles(ROOT, files, pattern, {
+    const { matches, total, exact } = await searchFiles(ROOT, files, pattern, {
       regex,
       ignoreCase,
       highlight,
       maxMatches: lim,
       offset: start,
     });
-    const hasMore = total >= start + lim;
+    const hasMore = total > start + matches.length;
     const next = hasMore ? `\nnext cursor: ${encodeCursor(start + lim, index.builtAt)}` : "";
-    return `${matches.length} match(es)${hasMore ? " (more available)" : ""}${staleNote}\n${formatMatches(matches)}${next}`;
+    const totalStr = exact ? `${total}` : `${total}+ (scan cap reached)`;
+    return `${matches.length} of ${totalStr} match(es)${staleNote}\n${formatMatches(matches)}${next}`;
   }
 );
 
@@ -172,7 +210,61 @@ tool(
         if (s.name === name && (!kind || s.kind === kind)) hits.push(`${file}:${s.line}:${s.col}  ${s.kind} ${s.name}`);
     return hits.length
       ? `${hits.length} definition candidate(s) for "${name}":\n${hits.join("\n")}`
-      : `No definition indexed for "${name}".`;
+      : `No definition indexed for "${name}". Try search_symbols for a fuzzy match.`;
+  }
+);
+
+tool(
+  "search_symbols",
+  {
+    title: "Fuzzy symbol name search",
+    description:
+      "Find indexed symbols whose name matches a query, ranked exact > prefix > substring > subsequence. Use this " +
+      "when you half-remember a name (\"something like handleAuth\") — it reads only the index, never the files, so " +
+      "it is far cheaper and far less noisy than search_code for finding a declaration.",
+    inputSchema: {
+      query: z.string(),
+      kind: z.string().optional().describe("Filter by kind: function, class, method, interface, type, …"),
+      pathPrefix: z.string().optional(),
+      limit: z.number().int().min(1).max(200).optional().describe("Default 25."),
+    },
+  },
+  async ({ query, kind, pathPrefix, limit }) => {
+    const index = await loadIndex(ROOT);
+    if (Object.keys(index.files).length === 0) return "Index is empty — run index_repo first.";
+    const q = query.toLowerCase();
+
+    // Subsequence match: every char of the query appears in order. Catches
+    // "hAuth" -> "handleAuth" without pulling in a fuzzy-match dependency.
+    const subseq = (name: string): boolean => {
+      let i = 0;
+      for (const ch of name) if (ch === q[i] && ++i === q.length) return true;
+      return i === q.length;
+    };
+
+    type Hit = { file: string; line: number; col: number; kind: string; name: string; rank: number };
+    const hits: Hit[] = [];
+    for (const [file, entry] of Object.entries(index.files)) {
+      if (pathPrefix && !file.startsWith(toPosix(pathPrefix))) continue;
+      for (const s of entry.symbols) {
+        if (kind && s.kind !== kind) continue;
+        const lower = s.name.toLowerCase();
+        let rank = -1;
+        if (lower === q) rank = 0;
+        else if (lower.startsWith(q)) rank = 1;
+        else if (lower.includes(q)) rank = 2;
+        else if (subseq(lower)) rank = 3;
+        if (rank >= 0) hits.push({ file, line: s.line, col: s.col, kind: s.kind, name: s.name, rank });
+      }
+    }
+    if (hits.length === 0) return `No indexed symbol matches "${query}".`;
+
+    const lim = limit ?? 25;
+    hits.sort((a, b) => a.rank - b.rank || a.name.length - b.name.length || a.name.localeCompare(b.name));
+    const shown = hits.slice(0, lim);
+    const rows = shown.map((h) => `  ${h.file}:${h.line}:${h.col}  ${h.kind.padEnd(9)} ${h.name}`);
+    const more = hits.length > shown.length ? `\n  … ${hits.length - shown.length} more; raise limit or narrow with kind/pathPrefix` : "";
+    return `${shown.length} of ${hits.length} symbol(s) matching "${query}":\n${rows.join("\n")}${more}`;
   }
 );
 
@@ -181,8 +273,9 @@ tool(
   {
     title: "Find references to a symbol (textual)",
     description:
-      "Whole-word textual search for a symbol, returned as path:line:col with the enclosing function/class. Not " +
-      "scope-aware, so may include unrelated same-named identifiers. Supports limit/offset.",
+      "Whole-word textual search for a symbol, returned as path:line:col with the enclosing function/class. Counts " +
+      "every occurrence, including repeats on one line. Not scope-aware, so may include unrelated same-named " +
+      "identifiers. Supports pathPrefix, limit and offset.",
     inputSchema: {
       name: z.string(),
       pathPrefix: z.string().optional(),
@@ -195,17 +288,21 @@ tool(
     let files = Object.keys(index.files);
     if (pathPrefix) files = files.filter((f) => f.startsWith(toPosix(pathPrefix)));
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const { matches } = await searchFiles(ROOT, files, `\\b${escaped}\\b`, {
+    const lim = limit ?? 20;
+    const off = offset ?? 0;
+    const { matches, total, exact } = await searchFiles(ROOT, files, `\\b${escaped}\\b`, {
       regex: true,
-      maxMatches: limit ?? 20,
-      offset: offset ?? 0,
+      maxMatches: lim,
+      offset: off,
     });
     // attribute each hit to its enclosing symbol
     const rows = matches.map((m) => {
       const enc = enclosingSymbol(index.files[m.file], m.line);
       return `  ${m.file}:${m.line}:${m.col}${enc ? `  in ${enc.kind} ${enc.name}` : ""}`;
     });
-    return `${matches.length} reference(s) to "${name}":\n${rows.join("\n") || "  (none)"}`;
+    const totalStr = exact ? `${total}` : `${total}+ (scan cap reached)`;
+    const more = total > off + matches.length ? `\n  … raise offset to ${off + lim} for more` : "";
+    return `${matches.length} of ${totalStr} reference(s) to "${name}":\n${rows.join("\n") || "  (none)"}${more}`;
   }
 );
 
@@ -214,8 +311,8 @@ tool(
   {
     title: "Surgical symbol snippet",
     description:
-      "Return ONLY the body of a symbol (function/class) plus a few context lines — not the whole file. Give a name " +
-      "(resolved via the index) or an explicit path+line. This is the biggest per-lookup token saver.",
+      "Return ONLY the body of a symbol (function/class/method) plus a few context lines — not the whole file. Give a " +
+      "name (resolved via the index) or an explicit path+line. This is the biggest per-lookup token saver.",
     inputSchema: {
       name: z.string().optional().describe("Symbol name to resolve via the index."),
       path: z.string().optional().describe("File path (use with line instead of name)."),
@@ -258,7 +355,8 @@ tool(
     title: "File skeleton (bodies elided)",
     description:
       "Structural skeleton of a file: every declaration's signature with its indentation preserved and bodies " +
-      "replaced by ' … {line}'. Turns a 2,000-line file into a readable map for a fraction of the tokens.",
+      "replaced by ' … {line}'. Turns a 2,000-line file into a readable map for a fraction of the tokens. Use this " +
+      "before any full read of a file over ~300 lines.",
     inputSchema: { path: z.string() },
   },
   async ({ path: p }) => {
@@ -303,11 +401,38 @@ tool(
   "repo_map",
   {
     title: "High-level repo map",
-    description: "Birds-eye overview: top directories with file counts, total lines, and symbol counts.",
-    inputSchema: { depth: z.number().int().min(1).max(4).optional() },
+    description:
+      "Birds-eye overview: top directories with file counts, total lines, and symbol counts. Pass `path` to drill " +
+      "into one directory and list its largest files (with `top` to cap the list) — the bridge between orienting at " +
+      "the directory level and picking a file to skeleton. Start every session here.",
+    inputSchema: {
+      depth: z.number().int().min(1).max(4).optional(),
+      path: z.string().optional().describe("Drill into this directory and list files instead of directories."),
+      top: z.number().int().min(1).max(200).optional().describe("With `path`: how many files to list (default 20)."),
+    },
   },
-  async ({ depth }) => {
+  async ({ depth, path: p, top }) => {
     const index = await loadIndex(ROOT);
+    if (Object.keys(index.files).length === 0) return "Index is empty — run index_repo first.";
+
+    // Drill-down: biggest files under a directory, so the agent can go
+    // repo_map -> repo_map(path) -> get_file_skeleton without guessing a path.
+    if (p) {
+      const prefix = toPosix(p).replace(/\/+$/, "");
+      const rows = Object.entries(index.files)
+        .filter(([f]) => f === prefix || f.startsWith(prefix + "/"))
+        .sort((a, b) => b[1].lines - a[1].lines);
+      if (rows.length === 0) return `No indexed files under "${prefix}".`;
+      const lim = top ?? 20;
+      const shown = rows.slice(0, lim);
+      const totalLines = rows.reduce((n, [, e]) => n + e.lines, 0);
+      const body = shown
+        .map(([f, e]) => `  ${f.padEnd(52)} ${String(e.lines).padStart(6)} lines ${String(e.symbols.length).padStart(5)} symbols`)
+        .join("\n");
+      const more = rows.length > shown.length ? `\n  … ${rows.length - shown.length} more file(s); raise top` : "";
+      return `${prefix}: ${rows.length} files, ${totalLines} lines (largest first)\n${body}${more}`;
+    }
+
     const d = depth ?? 2;
     const buckets = new Map<string, { files: number; lines: number; symbols: number }>();
     for (const [file, entry] of Object.entries(index.files)) {
@@ -319,11 +444,31 @@ tool(
       b.symbols += entry.symbols.length;
       buckets.set(key, b);
     }
-    if (buckets.size === 0) return "Index is empty — run index_repo first.";
     const rows = [...buckets.entries()]
       .sort((a, b) => b[1].lines - a[1].lines)
       .map(([k, v]) => `  ${k.padEnd(40)} ${String(v.files).padStart(5)} files ${String(v.lines).padStart(7)} lines ${String(v.symbols).padStart(6)} symbols`);
-    return `Repo map for ${ROOT} (depth ${d}):\n${rows.join("\n")}`;
+    return `Repo map for ${ROOT} (depth ${d}):\n${rows.join("\n")}\n(drill in with repo_map path:"<dir>")`;
+  }
+);
+
+tool(
+  "changed_files",
+  {
+    title: "What changed, and which symbols it touched",
+    description:
+      "Summarize the working-tree diff (or a diff against `base`) as changed files with +added/-deleted counts AND " +
+      "the enclosing functions/classes each hunk lands in — the blast radius, without pulling the patch into " +
+      "context. The cheap way to start a session on a dirty repo. Requires a git checkout.",
+    inputSchema: {
+      base: z.string().optional().describe("Ref to diff against (e.g. 'main', 'HEAD~3'). Omit for working tree vs HEAD."),
+      limit: z.number().int().min(1).max(500).optional().describe("Max files to list (default 30)."),
+    },
+  },
+  async ({ base, limit }) => {
+    if (!(await isGitRepo(ROOT))) return `${ROOT} is not a git repository (or git is not installed).`;
+    const index = await loadIndex(ROOT);
+    const files = await changedFiles(ROOT, index, base);
+    return formatChanged(files, base, limit ?? 30);
   }
 );
 
@@ -334,7 +479,7 @@ tool(
     description:
       "Query the internal import graph. mode=imports: what a file imports. mode=dependents: what imports a file. " +
       "mode=mermaid: a Mermaid diagram — pass root (+depth, default 2) to walk outward from one file instead of " +
-      "dumping the whole graph, or scope to a path prefix.",
+      "dumping the whole graph, or scope to a path prefix. Run this before refactoring a shared module.",
     inputSchema: {
       mode: z.enum(["imports", "dependents", "mermaid"]),
       target: z.string().optional(),
@@ -365,6 +510,25 @@ tool(
     }
     const deps = dependents(graph, t);
     return deps.length ? `Files importing ${t}:\n${deps.map((d) => "  " + d).join("\n")}` : `Nothing internal imports ${t}.`;
+  }
+);
+
+tool(
+  "stats",
+  {
+    title: "Tool usage and response-size accounting",
+    description:
+      "Per-tool call counts and response sizes recorded to <root>/.leanctx/stats.json. Reported in characters, not " +
+      "tokens — char/4 estimates are unreliable across tokenizers, so this measures what it can measure honestly. " +
+      "Use it to see which tool is actually producing your context, and to tune limits.",
+    inputSchema: { reset: z.boolean().optional().describe("Clear the counters instead of reporting them.") },
+  },
+  async ({ reset }) => {
+    if (reset) {
+      await resetStats(ROOT);
+      return "Stats reset.";
+    }
+    return formatStats(await loadStats(ROOT));
   }
 );
 
@@ -456,7 +620,7 @@ tool(
 // ---------------------------------------------------------------------------
 async function main() {
   await server.connect(new StdioServerTransport());
-  console.error(`leanctx-mcp v0.4.0 ready. root=${ROOT}  tools=${Object.keys(handlers).length}`);
+  console.error(`leanctx-mcp v0.5.0 ready. root=${ROOT}  tools=${Object.keys(handlers).length}`);
   // Opt-in auto-reindex on file change. Off unless LEANCTX_WATCH is truthy.
   if (["1", "true", "yes"].includes((process.env.LEANCTX_WATCH || "").toLowerCase())) {
     const { startWatcher } = await import("./watch.js");

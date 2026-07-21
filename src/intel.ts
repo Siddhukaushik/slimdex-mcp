@@ -75,7 +75,6 @@ export function extractBlock(lines: string[], startLine: number): { start: numbe
   const i0 = startLine - 1;
   if (i0 < 0 || i0 >= lines.length) return { start: startLine, end: startLine };
   const defIndent = leadingWS(lines[i0]);
-
   const st: ScanState = { inBlockComment: false, stringChar: null };
   let sawBrace = false;
   let depth = 0;
@@ -228,7 +227,6 @@ export async function buildContext(
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const defSet = new Set(defs.map((d) => `${d.file}:${d.line}`));
     const files = Object.keys(index.files);
-
     const hits: { file: string; line: number; enc: ReturnType<typeof enclosingSymbol> }[] = [];
     const BATCH = 24;
     for (let b = 0; b < files.length; b += BATCH) {

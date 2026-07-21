@@ -16,7 +16,16 @@ export interface OutlineEntry {
 interface Rule {
   kind: string;
   re: RegExp;
+  reject?: Set<string>; // captured names that are keywords, not declarations
 }
+
+// Mirrors symbols.ts: a bare `name(args) {` looks exactly like `if (cond) {`,
+// so the method rules capture the name and discard control-flow keywords.
+const NOT_A_METHOD = new Set([
+  "if", "for", "while", "switch", "catch", "do", "else", "return", "function",
+  "typeof", "delete", "new", "await", "yield", "case", "throw", "with", "in",
+  "of", "try", "finally", "import", "export", "default",
+]);
 
 const COMMON: Rule[] = [
   // JS / TS
@@ -33,6 +42,12 @@ const COMMON: Rule[] = [
     kind: "function",
     re: /^\s*(export\s+)?(const|let|var)\s+([A-Za-z0-9_]+)\s*[:=].*=>\s*\{?\s*$/,
   },
+  // JS/TS class & object-literal methods (see NOT_A_METHOD above)
+  {
+    kind: "method",
+    re: /^[ \t]+(?:(?:public|private|protected|static|readonly|abstract|override|async|get|set)\s+)*(?:\*\s*)?([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>]*>)?\s*\(.*\)\s*(?::\s*[^{;]+)?\{\s*\}?\s*$/,
+    reject: NOT_A_METHOD,
+  },
   // Python
   { kind: "class", re: /^\s*class\s+([A-Za-z0-9_]+)/ },
   { kind: "function", re: /^\s*(async\s+)?def\s+([A-Za-z0-9_]+)/ },
@@ -43,10 +58,14 @@ const COMMON: Rule[] = [
   { kind: "function", re: /^\s*(pub\s+)?(async\s+)?fn\s+[A-Za-z0-9_]+/ },
   { kind: "struct", re: /^\s*(pub\s+)?struct\s+[A-Za-z0-9_]+/ },
   { kind: "impl", re: /^\s*impl(\s|<)/ },
-  // Java / C#
+  // Java / C#. The modifier group must match at least one *real* modifier: the
+  // previous version allowed a bare `\s` alternative, which made this rule match
+  // every `if (cond) {` and `for (…) {` in any C-family file and report it as a
+  // method. Return type and name are now separate so `reject` can see the name.
   {
     kind: "method",
-    re: /^\s*(public|private|protected|internal|static|final|abstract|\s)+[A-Za-z0-9_<>\[\],. ]+\s+[A-Za-z0-9_]+\s*\([^;{]*\)\s*\{?\s*$/,
+    re: /^\s*(?:(?:public|private|protected|internal|static|final|abstract|virtual|override|sealed|synchronized|async)\s+)+[A-Za-z0-9_<>\[\],.]+\s+([A-Za-z0-9_]+)\s*\([^;{]*\)\s*\{?\s*$/,
+    reject: NOT_A_METHOD,
   },
 ];
 
@@ -71,7 +90,9 @@ export function outline(source: string, maxEntries = 400): OutlineEntry[] {
     if (!line.trim() || isComment(line)) continue;
 
     for (const rule of COMMON) {
-      if (rule.re.test(line)) {
+      const m = rule.re.exec(line);
+      if (m) {
+        if (rule.reject && m[1] && rule.reject.has(m[1])) continue;
         entries.push({
           line: i + 1,
           kind: rule.kind,

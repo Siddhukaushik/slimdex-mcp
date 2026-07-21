@@ -26,27 +26,86 @@ export function toPosix(p: string): string {
 }
 
 // Optional per-repo config at <root>/.leanctx.json:
-//   { "ignoreDirs": ["fixtures"], "extensions": [".astro"], "exclude": ["generated/"] }
+//   { "ignoreDirs": ["fixtures"], "extensions": [".astro"], "exclude": ["generated/"],
+//     "maxFileBytes": 2000000 }
 interface LeanctxConfig {
   ignoreDirs: Set<string>;
   extensions: Set<string>;
   exclude: string[]; // substring match against repo-relative posix path
+  maxFileBytes: number;
+  // Reported back to the caller so a typo'd key or malformed JSON is visible in
+  // index_repo's output. Silently swallowing config errors made a broken
+  // .leanctx.json indistinguishable from having none at all.
+  present: boolean;
+  warnings: string[];
+  summary: string;
 }
+
+const KNOWN_KEYS = new Set(["ignoreDirs", "extensions", "exclude", "maxFileBytes"]);
 
 async function loadConfig(root: string): Promise<LeanctxConfig> {
   const ignoreDirs = new Set(IGNORE_DIRS);
   const extensions = new Set(CODE_EXT);
   const exclude: string[] = [];
+  const warnings: string[] = [];
+  let maxFileBytes = MAX_FILE_BYTES;
+  let present = false;
+  const added = { ignoreDirs: 0, extensions: 0, exclude: 0 };
+
+  let raw: string;
   try {
-    const raw = await fs.readFile(path.join(root, ".leanctx.json"), "utf8");
-    const cfg = JSON.parse(raw);
-    for (const d of cfg.ignoreDirs ?? []) ignoreDirs.add(String(d));
-    for (const e of cfg.extensions ?? []) extensions.add(String(e).toLowerCase());
-    for (const x of cfg.exclude ?? []) exclude.push(toPosix(String(x)));
+    raw = await fs.readFile(path.join(root, ".leanctx.json"), "utf8");
+    present = true;
   } catch {
-    /* no config, use defaults */
+    return { ignoreDirs, extensions, exclude, maxFileBytes, present: false, warnings, summary: "no .leanctx.json (defaults)" };
   }
-  return { ignoreDirs, extensions, exclude };
+
+  let cfg: Record<string, unknown>;
+  try {
+    cfg = JSON.parse(raw);
+  } catch (e) {
+    warnings.push(`.leanctx.json is not valid JSON (${(e as Error).message}) — ignoring it and using defaults`);
+    return { ignoreDirs, extensions, exclude, maxFileBytes, present, warnings, summary: "invalid .leanctx.json" };
+  }
+
+  for (const key of Object.keys(cfg)) {
+    if (!KNOWN_KEYS.has(key)) warnings.push(`unknown key "${key}" in .leanctx.json (known: ${[...KNOWN_KEYS].join(", ")})`);
+  }
+
+  const asArray = (key: string): unknown[] => {
+    const v = cfg[key];
+    if (v === undefined) return [];
+    if (!Array.isArray(v)) {
+      warnings.push(`"${key}" must be an array — ignored`);
+      return [];
+    }
+    return v;
+  };
+
+  for (const d of asArray("ignoreDirs")) {
+    ignoreDirs.add(String(d));
+    added.ignoreDirs++;
+  }
+  for (const e of asArray("extensions")) {
+    const ext = String(e).toLowerCase();
+    if (!ext.startsWith(".")) warnings.push(`extension "${e}" should start with a dot`);
+    extensions.add(ext);
+    added.extensions++;
+  }
+  for (const x of asArray("exclude")) {
+    exclude.push(toPosix(String(x)));
+    added.exclude++;
+  }
+  if (cfg.maxFileBytes !== undefined) {
+    const n = Number(cfg.maxFileBytes);
+    if (Number.isFinite(n) && n > 0) maxFileBytes = n;
+    else warnings.push(`"maxFileBytes" must be a positive number — using default ${MAX_FILE_BYTES}`);
+  }
+
+  const summary =
+    `.leanctx.json loaded (+${added.ignoreDirs} ignoreDirs, +${added.extensions} extensions, ` +
+    `${added.exclude} exclude rules, maxFileBytes ${maxFileBytes})`;
+  return { ignoreDirs, extensions, exclude, maxFileBytes, present, warnings, summary };
 }
 
 async function walk(root: string, dir: string, acc: string[], cfg: LeanctxConfig): Promise<void> {
@@ -76,6 +135,10 @@ export interface IndexResult {
   reused: number;
   removed: number;
   totalFiles: number;
+  skipped: number; // over maxFileBytes
+  parser: string;
+  config: string; // human-readable config summary
+  warnings: string[];
 }
 
 export async function buildOrRefresh(root: string, force = false): Promise<IndexResult> {
@@ -86,8 +149,10 @@ export async function buildOrRefresh(root: string, force = false): Promise<Index
   await walk(root, root, files, cfg);
 
   const present = new Set<string>();
+  const parser = getParser();
   let parsed = 0;
   let reused = 0;
+  let skipped = 0;
 
   for (const full of files) {
     const rel = toPosix(path.relative(root, full));
@@ -98,7 +163,11 @@ export async function buildOrRefresh(root: string, force = false): Promise<Index
     } catch {
       continue;
     }
-    if (stat.size > MAX_FILE_BYTES) continue;
+    if (stat.size > cfg.maxFileBytes) {
+      skipped++;
+      present.delete(rel); // not indexed, so don't treat it as still-present
+      continue;
+    }
 
     const existing = index.files[rel];
     if (existing && existing.mtimeMs === stat.mtimeMs) {
@@ -132,5 +201,15 @@ export async function buildOrRefresh(root: string, force = false): Promise<Index
   }
 
   await saveIndex(root, index);
-  return { index, parsed, reused, removed, totalFiles: present.size };
+  return {
+    index,
+    parsed,
+    reused,
+    removed,
+    totalFiles: present.size,
+    skipped,
+    parser: parser.name,
+    config: cfg.summary,
+    warnings: cfg.warnings,
+  };
 }

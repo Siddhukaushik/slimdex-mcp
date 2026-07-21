@@ -29,7 +29,7 @@ afterAll(async () => {
 describe("searchFiles", () => {
   it("returns path:line:col matches with caret highlight", async () => {
     const { matches } = await searchFiles(root, ["src/a.ts"], "beta", { highlight: true });
-    expect(matches.length).toBe(2); // one match per line, first per line
+    expect(matches.length).toBe(2); // "beta" occurs once on each of two lines
     expect(matches[0]).toMatchObject({ file: "src/a.ts", line: 2, col: 10 });
     expect(matches[0].highlight).toContain("^^^^");
     const text = formatMatches(matches);
@@ -46,6 +46,23 @@ describe("searchFiles", () => {
     const overlap = page1.matches.map(key).filter((k) => page2.matches.map(key).includes(k));
     expect(overlap).toEqual([]);
     expect(page1.total).toBeGreaterThanOrEqual(5);
+  });
+
+  it("counts every occurrence on a line, not just the first", async () => {
+    // Regression: one exec per line silently undercounted `foo(foo(x))`, which
+    // made `total` — and therefore find_references — wrong.
+    await writeFile(path.join(root, "src", "rep.ts"), "aa aa aa\nbb\naa\n", "utf8");
+    const r = await searchFiles(root, ["src/rep.ts"], "aa", { maxMatches: 50 });
+    expect(r.total).toBe(4); // 3 on line 1 + 1 on line 3
+    expect(r.exact).toBe(true);
+    expect(r.matches.map((m) => m.col).slice(0, 3)).toEqual([1, 4, 7]);
+  });
+
+  it("reports an exact total rather than a lower bound", async () => {
+    const r = await searchFiles(root, ["src/b.ts"], "beta", { maxMatches: 3 });
+    expect(r.matches.length).toBe(3);
+    expect(r.total).toBe(30);
+    expect(r.exact).toBe(true);
   });
 
   it("escapes literal patterns and rejects bad regex tersely", async () => {

@@ -1,6 +1,6 @@
 {
   "name": "leanctx-mcp",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A local MCP server that reduces token usage for coding agents by returning code outlines, surgical symbol context, a dependency graph, and persistent memory instead of whole files.",
   "type": "module",
   "keywords": ["mcp", "model-context-protocol", "claude", "coding-agent", "tokens", "code-intelligence", "llm"],
@@ -25,6 +25,7 @@
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "test": "vitest run",
+    "smoke": "npm run build && node smoke-test.mjs",
     "prepublishOnly": "npm run build && npm test"
   },
   "dependencies": {

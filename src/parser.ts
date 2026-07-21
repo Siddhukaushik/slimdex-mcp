@@ -16,7 +16,7 @@ import { extractSymbols, extractImports, type SymbolDef, type ImportRef } from "
 
 export interface Parser {
   readonly name: string;
-  extractSymbols(source: string): SymbolDef[];
+  extractSymbols(source: string, maxSymbols?: number): SymbolDef[];
   extractImports(source: string): ImportRef[];
 }
 

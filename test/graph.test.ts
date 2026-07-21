@@ -27,6 +27,21 @@ describe("buildGraph", () => {
     );
   });
 
+  it("resolves TypeScript's ESM `./x.js` specifier to x.ts", () => {
+    // Regression: TS with module Node16/NodeNext writes `./outline.js` for a
+    // file that is actually outline.ts. Without stripping that extension the
+    // import graph came out completely empty for every such project.
+    const tsIndex: CodeIndex = {
+      version: 1,
+      builtAt: "",
+      files: { "src/a.ts": entry(["./b.js"]), "src/b.ts": entry([]) },
+    };
+    const tg = buildGraph(tsIndex);
+    expect(tg.imports["src/a.ts"]).toEqual(["src/b.ts"]);
+    expect(dependents(tg, "src/b.ts")).toEqual(["src/a.ts"]);
+    expect(tg.external["src/a.ts"]).toBeUndefined();
+  });
+
   it("classifies unresolvable modules as external", () => {
     expect(g.external["src/app.ts"]).toEqual(["react"]);
     expect(g.external["src/db.ts"]).toEqual(["node:fs"]);
