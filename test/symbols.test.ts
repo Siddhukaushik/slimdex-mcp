@@ -175,3 +175,30 @@ describe("extractSymbols — depth", () => {
     expect(line.slice(s.col - 1, s.col - 1 + s.name.length)).toBe("greet");
   });
 });
+
+describe("extractSymbols — generic return types (Apex/Java/C#)", () => {
+  it("finds a method whose return type has a space inside generics", () => {
+    // Regression: `[A-Za-z0-9_$<>\[\],.]*` excluded the space in
+    // `Map<String, Decimal>`, so this Apex method was never indexed even
+    // though the LWC that calls it imported it by name.
+    const src = ["public class C {", "    public static Map<String, Decimal> getFinancialSummary() {", "    }", "}"].join("\n");
+    expect(extractSymbols(src).map((s) => s.name)).toContain("getFinancialSummary");
+  });
+
+  it("handles nested generics and array suffixes", () => {
+    const src = [
+      "public class C {",
+      "    public static Map<String, List<Foo>> nested() {",
+      "    public static String[] arrayed() {",
+      "}",
+    ].join("\n");
+    const names = extractSymbols(src).map((s) => s.name);
+    expect(names).toContain("nested");
+    expect(names).toContain("arrayed");
+  });
+
+  it("finds Apex 'global' and List<T> methods", () => {
+    const src = ["public class C {", "    global static List<SK_ACH_Investor__c> getInvestors() {", "}"].join("\n");
+    expect(extractSymbols(src).map((s) => s.name)).toContain("getInvestors");
+  });
+});

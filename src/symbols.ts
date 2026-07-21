@@ -38,6 +38,11 @@ const NOT_A_METHOD = new Set([
   "of", "try", "finally", "import", "export", "default",
 ]);
 
+// A type reference with optional generics (one level of nesting, spaces allowed
+// inside them) and optional array suffix: `Decimal`, `List<SK_ACH_Investor__c>`,
+// `Map<String, Decimal>`, `Map<String, List<Foo>>`, `String[]`.
+const RETURN_TYPE = "[A-Za-z_$][A-Za-z0-9_$.]*(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?(?:\\[\\])*";
+
 const RULES: Rule[] = [
   // ---- JS / TS ----
   { kind: "class", re: /\b(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([A-Za-z0-9_$]+)/ },
@@ -56,12 +61,22 @@ const RULES: Rule[] = [
     re: /^[ \t]+(?:(?:public|private|protected|static|readonly|abstract|override|async|get|set)\s+)*(?:\*\s*)?([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>]*>)?\s*\(.*\)\s*(?::\s*[^{;]+)?\{\s*\}?\s*$/,
     reject: NOT_A_METHOD,
   },
-  // Java / C# / C++ methods, where a return type sits between the modifiers and
+  // Java / C# / Apex methods, where a return type sits between the modifiers and
   // the name: `public async Task<int> GetUser(string id) {`. At least one
   // modifier is required so this can't swallow arbitrary expressions.
+  //
+  // The return type must tolerate spaces inside generics: the old character
+  // class `[A-Za-z0-9_$<>\[\],.]*` had no space, so `Map<String, Decimal>` —
+  // idiomatic in Apex and common in Java/C# — silently failed to match and the
+  // method was never indexed. RETURN_TYPE below allows one level of nesting,
+  // covering `Map<String, List<Foo>>`, plus array suffixes.
   {
     kind: "method",
-    re: /^[ \t]+(?:(?:public|private|protected|internal|static|final|virtual|override|abstract|sealed|synchronized|async|unsafe)\s+)+[A-Za-z_$][A-Za-z0-9_$<>\[\],.]*\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(.*\)\s*(?:\{|$)/,
+    re: new RegExp(
+      "^[ \\t]+(?:(?:public|private|protected|internal|global|static|final|virtual|override|abstract|sealed|synchronized|async|unsafe|transient|webservice)\\s+)+" +
+        RETURN_TYPE +
+        "\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s*\\(.*\\)\\s*(?:\\{|$)"
+    ),
     reject: NOT_A_METHOD,
   },
   // ---- Python ----

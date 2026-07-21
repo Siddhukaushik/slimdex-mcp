@@ -69,8 +69,15 @@ const COMMON: Rule[] = [
   // every `if (cond) {` and `for (…) {` in any C-family file and report it as a
   // method. Return type and name are now separate so `reject` can see the name.
   {
+    // Return type must allow spaces inside generics — `Map<String, Decimal>`
+    // is idiomatic Apex and common in Java/C#, and the old character class
+    // excluded the space, so those methods never appeared in an outline.
     kind: "method",
-    re: /^\s*(?:(?:public|private|protected|internal|static|final|abstract|virtual|override|sealed|synchronized|async)\s+)+[A-Za-z0-9_<>\[\],.]+\s+([A-Za-z0-9_]+)\s*\([^;{]*\)\s*\{?\s*$/,
+    re: new RegExp(
+      "^\\s*(?:(?:public|private|protected|internal|global|static|final|abstract|virtual|override|sealed|synchronized|async|transient|webservice)\\s+)+" +
+        "[A-Za-z_$][A-Za-z0-9_$.]*(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>)?(?:\\[\\])*" +
+        "\\s+([A-Za-z0-9_]+)\\s*\\([^;{]*\\)\\s*\\{?\\s*$"
+    ),
     reject: NOT_A_METHOD,
   },
 ];
