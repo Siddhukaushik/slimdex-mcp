@@ -59,6 +59,12 @@ it's honest — no code is sent to any third party, everything runs locally.
 
 ### Honest limitations
 
+- Block extraction (used by `get_symbol_context` / `get_context`) counts braces
+  **string- and comment-aware**: braces inside `"..."`, `'...'`, backtick
+  templates, `//` and `/* */` comments, and full-line `#` comments are ignored.
+  Known gap: an *inline* Python `#` comment containing a brace can still
+  confuse it (`#` is also the JS private-field sigil, so it can't be stripped
+  blindly).
 - Symbol extraction is **regex-based and heuristic**, not a full parser or LSP.
   It supports JS/TS, Python, Go, Rust, Java/C#, Ruby, and common C-family
   syntax. It can miss unusual declarations and `find_references` is a *textual*

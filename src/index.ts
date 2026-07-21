@@ -219,13 +219,18 @@ tool(
       file = toPosix(path.relative(ROOT, safeResolve(p)));
       defLine = line;
     } else if (name) {
-      let found: { file: string; line: number; kind: string } | null = null;
+      const found: { file: string; line: number; kind: string }[] = [];
       for (const [f, entry] of Object.entries(index.files))
-        for (const s of entry.symbols) if (s.name === name) { found = { file: f, line: s.line, kind: s.kind }; break; }
-      if (!found) return `No definition indexed for "${name}". Run index_repo, or pass path + line explicitly.`;
-      file = found.file;
-      defLine = found.line;
-      kind = found.kind;
+        for (const s of entry.symbols) if (s.name === name) found.push({ file: f, line: s.line, kind: s.kind });
+      if (found.length === 0) return `No definition indexed for "${name}". Run index_repo, or pass path + line explicitly.`;
+      if (found.length > 1)
+        return (
+          `"${name}" has ${found.length} definitions — pass path + line to pick one:\n` +
+          found.map((d) => `  ${d.file}:${d.line}  ${d.kind}`).join("\n")
+        );
+      file = found[0].file;
+      defLine = found[0].line;
+      kind = found[0].kind;
     } else {
       return "Provide either name, or path + line.";
     }
