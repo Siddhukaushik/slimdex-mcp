@@ -11,12 +11,18 @@ const IGNORE_DIRS = new Set([
   ".git", "node_modules", "dist", "build", "out", ".next", ".nuxt", "target",
   "__pycache__", ".venv", "venv", "env", ".idea", ".vscode", "coverage",
   ".codeglance", ".cache", "vendor", "bin", "obj", ".gradle", ".mvn",
+  // Salesforce DX writes generated apex/lwc typings here — thousands of lines
+  // of machine output with no symbols worth indexing.
+  ".sfdx", ".sf",
 ]);
 
 const CODE_EXT = new Set([
   ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs",
   ".java", ".cs", ".rb", ".php", ".c", ".h", ".cpp", ".hpp", ".cc",
   ".kt", ".swift", ".scala", ".m", ".mm", ".vue", ".svelte",
+  // Apex. Syntactically Java-like, so the existing Java/C# rules find its
+  // classes and methods without needing rules of their own.
+  ".cls", ".trigger",
 ]);
 
 const MAX_FILE_BYTES = 1_500_000; // skip anything larger; almost certainly generated
