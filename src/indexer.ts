@@ -28,7 +28,7 @@ export function toPosix(p: string): string {
 // Optional per-repo config at <root>/.codeglance.json:
 //   { "ignoreDirs": ["fixtures"], "extensions": [".astro"], "exclude": ["generated/"],
 //     "maxFileBytes": 2000000 }
-interface LeanctxConfig {
+interface CodeglanceConfig {
   ignoreDirs: Set<string>;
   extensions: Set<string>;
   exclude: string[]; // substring match against repo-relative posix path
@@ -43,7 +43,7 @@ interface LeanctxConfig {
 
 const KNOWN_KEYS = new Set(["ignoreDirs", "extensions", "exclude", "maxFileBytes"]);
 
-async function loadConfig(root: string): Promise<LeanctxConfig> {
+async function loadConfig(root: string): Promise<CodeglanceConfig> {
   const ignoreDirs = new Set(IGNORE_DIRS);
   const extensions = new Set(CODE_EXT);
   const exclude: string[] = [];
@@ -108,7 +108,7 @@ async function loadConfig(root: string): Promise<LeanctxConfig> {
   return { ignoreDirs, extensions, exclude, maxFileBytes, present, warnings, summary };
 }
 
-async function walk(root: string, dir: string, acc: string[], cfg: LeanctxConfig): Promise<void> {
+async function walk(root: string, dir: string, acc: string[], cfg: CodeglanceConfig): Promise<void> {
   let entries: import("node:fs").Dirent[];
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });
