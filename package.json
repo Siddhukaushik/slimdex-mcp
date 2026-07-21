@@ -3,7 +3,15 @@
   "version": "0.5.0",
   "description": "A local MCP server that reduces token usage for coding agents by returning code outlines, surgical symbol context, a dependency graph, and persistent memory instead of whole files.",
   "type": "module",
-  "keywords": ["mcp", "model-context-protocol", "claude", "coding-agent", "tokens", "code-intelligence", "llm"],
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "claude",
+    "coding-agent",
+    "tokens",
+    "code-intelligence",
+    "llm"
+  ],
   "homepage": "https://github.com/Siddhukaushik/leanctx-mcp#readme",
   "repository": {
     "type": "git",
@@ -37,5 +45,9 @@
     "typescript": "^5.6.0",
     "vitest": "^4.1.10"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "overrides": {
+    "@emnapi/core": "1.11.2",
+    "@emnapi/runtime": "1.11.2"
+  }
 }
