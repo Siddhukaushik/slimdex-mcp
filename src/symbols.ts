@@ -74,6 +74,8 @@ const RULES: Rule[] = [
     kind: "method",
     re: new RegExp(
       "^[ \\t]+(?:(?:public|private|protected|internal|global|static|final|virtual|override|abstract|sealed|synchronized|async|unsafe|transient|webservice)\\s+)+" +
+        // Optional generic type parameter, as in `static <T> Optional<T> firstOf(…)`.
+        "(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>\\s+)?" +
         RETURN_TYPE +
         "\\s+([A-Za-z_$][A-Za-z0-9_$]*)\\s*\\(.*\\)\\s*(?:\\{|$)"
     ),
@@ -81,21 +83,48 @@ const RULES: Rule[] = [
   },
   // ---- Python ----
   { kind: "class", re: /^\s*class\s+([A-Za-z0-9_]+)/ },
-  { kind: "function", re: /^\s*(?:async\s+)?def\s+([A-Za-z0-9_]+)/ },
+  // The `self.` prefix is Ruby's class-method syntax, not Python's — but this
+  // rule is earlier in the list, so it must skip the prefix too or it captures
+  // `self` from `def self.build` and the Ruby rule never gets a turn.
+  { kind: "function", re: /^\s*(?:async\s+)?def\s+(?:self\.)?([A-Za-z0-9_]+)/ },
   // ---- Go ----
   { kind: "function", re: /^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z0-9_]+)\s*\(/ },
   { kind: "type", re: /^\s*type\s+([A-Za-z0-9_]+)\s+(?:struct|interface)\b/ },
   // ---- Rust ----
-  { kind: "function", re: /\b(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z0-9_]+)/ },
+  // Container rules come BEFORE `fn`, because only one symbol is taken per line
+  // and `pub trait Handler { fn serve(&self); }` would otherwise report `serve`
+  // and lose the trait entirely.
   { kind: "struct", re: /\b(?:pub\s+)?struct\s+([A-Za-z0-9_]+)/ },
   { kind: "enum", re: /\b(?:pub\s+)?enum\s+([A-Za-z0-9_]+)/ },
   { kind: "trait", re: /\b(?:pub\s+)?trait\s+([A-Za-z0-9_]+)/ },
+  { kind: "function", re: /\b(?:pub\s+)?(?:async\s+)?fn\s+([A-Za-z0-9_]+)/ },
+  // ---- Kotlin ----
+  { kind: "object", re: /^\s*(?:companion\s+)?object\s+([A-Za-z0-9_]+)/ },
+  {
+    kind: "function",
+    re: /^\s*(?:(?:public|private|protected|internal|open|override|suspend|inline|operator|abstract|final|tailrec)\s+)*fun\s+(?:<[^>]*>\s*)?([A-Za-z0-9_]+)/,
+  },
+  // ---- Swift ----
+  { kind: "protocol", re: /^\s*(?:(?:public|private|fileprivate|internal|open)\s+)?protocol\s+([A-Za-z0-9_]+)/ },
+  {
+    kind: "function",
+    re: /^\s*(?:(?:public|private|fileprivate|internal|open|static|class|final|override|mutating|convenience)\s+)*func\s+([A-Za-z0-9_]+)/,
+  },
   // ---- Java / C# / C++ (methods & types) ----
   { kind: "class", re: /\b(?:public|private|protected|internal|static|final|sealed|abstract|\s)*class\s+([A-Za-z0-9_]+)/ },
   { kind: "type", re: /\b(?:public|private|protected|internal|\s)*(?:struct|enum|interface)\s+([A-Za-z0-9_]+)/ },
-  // ---- Ruby ----
-  { kind: "method", re: /^\s*def\s+([A-Za-z0-9_?!]+)/ },
+  // ---- Apex trigger ----
+  { kind: "trigger", re: /^\s*trigger\s+([A-Za-z0-9_]+)\s+on\b/ },
+  // ---- Ruby / Scala ----
+  // Modifiers may precede `def` in Scala (`private def helper`), and Ruby class
+  // methods are written `def self.build` — capturing `self` there is useless.
+  {
+    kind: "method",
+    re: /^\s*(?:(?:private|protected|public|override|final|implicit|lazy)\s+)*def\s+(?:self\.)?([A-Za-z0-9_?!]+)/,
+  },
   { kind: "class", re: /^\s*(?:class|module)\s+([A-Za-z0-9_:]+)/ },
+  // ---- Objective-C ----
+  { kind: "method", re: /^\s*[-+]\s*\([^)]*\)\s*([A-Za-z_][A-Za-z0-9_]*)/ },
 ];
 
 function isComment(line: string): boolean {

@@ -58,7 +58,20 @@ const INSTRUCTIONS = `codeglance replaces "read the whole file" with narrow retr
 7. Before refactoring a shared module, run dep_graph mode:"mermaid" root:"<file>" to see the blast radius.
 8. changed_files is the cheap way to start a session on a dirty repo — it reports which symbols the diff
    lands in, without pulling the patch into context.
-9. batch several lookups into one call when they're independent.`;
+9. batch several lookups into one call when they're independent.
+
+MEMORY — this is what makes a new chat start informed instead of blank:
+
+10. FIRST action in a new session, before exploring: memory_list (or memory_search on the topic).
+    Facts saved in earlier chats live in <root>/.codeglance/memory.json and survive restarts.
+    Reading them is one cheap call and routinely saves re-deriving what a past session already worked out.
+11. memory_save anything durable the moment you learn it — an architectural decision and WHY, a
+    non-obvious constraint, a gotcha that cost you time, where a surprising thing lives, a convention
+    the code implies but never states. Tag it so memory_search finds it later.
+12. Do NOT save what the code already says. A symbol's location is what the index is for; re-run
+    index_repo instead. Memory is for the things reading the code cannot tell you.
+13. Correct rather than duplicate: memory_search before saving, and memory_delete facts that turn out
+    to be wrong. A store full of stale or repeated notes is worse than an empty one.`;
 
 // ---------------------------------------------------------------------------
 // Handler registry. Each handler returns a plain string. Registering through
@@ -68,7 +81,7 @@ const INSTRUCTIONS = `codeglance replaces "read the whole file" with narrow retr
 // ---------------------------------------------------------------------------
 type Handler = (args: any) => Promise<string>;
 const handlers: Record<string, Handler> = {};
-const server = new McpServer({ name: "codeglance", version: "0.6.0" }, { instructions: INSTRUCTIONS });
+const server = new McpServer({ name: "codeglance", version: "0.7.0" }, { instructions: INSTRUCTIONS });
 
 function tool(name: string, meta: { title: string; description: string; inputSchema: any }, fn: Handler) {
   handlers[name] = fn;
@@ -628,7 +641,7 @@ tool(
 // ---------------------------------------------------------------------------
 async function main() {
   await server.connect(new StdioServerTransport());
-  console.error(`codeglance-mcp v0.6.0 ready. root=${ROOT}  tools=${Object.keys(handlers).length}`);
+  console.error(`codeglance-mcp v0.7.0 ready. root=${ROOT}  tools=${Object.keys(handlers).length}`);
   // Opt-in auto-reindex on file change. Off unless CODEGLANCE_WATCH is truthy.
   if (["1", "true", "yes"].includes((process.env.CODEGLANCE_WATCH || "").toLowerCase())) {
     const { startWatcher } = await import("./watch.js");

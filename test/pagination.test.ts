@@ -38,3 +38,36 @@ describe("parser abstraction", () => {
     }
   });
 });
+
+describe("index cache", () => {
+  it("returns cached data but reloads after the index is rewritten", async () => {
+    const { loadIndex, saveIndex, INDEX_VERSION } = await import("../src/store.js");
+    const { mkdtemp, rm } = await import("node:fs/promises");
+    const { tmpdir } = await import("node:os");
+    const pathMod = await import("node:path");
+
+    const root = await mkdtemp(pathMod.join(tmpdir(), "cg-cache-"));
+    try {
+      await saveIndex(root, {
+        version: INDEX_VERSION,
+        builtAt: "",
+        files: { "a.ts": { mtimeMs: 1, lines: 1, symbols: [], imports: [] } },
+      });
+      const first = await loadIndex(root);
+      expect(Object.keys(first.files)).toEqual(["a.ts"]);
+
+      // Same object back on a second read — proof it did not re-parse.
+      expect(await loadIndex(root)).toBe(first);
+
+      // A rewrite must be picked up, not served stale from cache.
+      await saveIndex(root, {
+        version: INDEX_VERSION,
+        builtAt: "",
+        files: { "b.ts": { mtimeMs: 2, lines: 2, symbols: [], imports: [] } },
+      });
+      expect(Object.keys((await loadIndex(root)).files)).toEqual(["b.ts"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

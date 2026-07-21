@@ -148,7 +148,14 @@ export interface IndexResult {
 }
 
 export async function buildOrRefresh(root: string, force = false): Promise<IndexResult> {
-  const index = force ? { version: INDEX_VERSION, builtAt: "", files: {} } : await loadIndex(root);
+  // loadIndex now returns a cached object shared with every other caller, and
+  // the loop below assigns into `index.files`. Copy the map first so a refresh
+  // in progress can never mutate what other tool calls are reading. Entries are
+  // replaced wholesale rather than edited, so a shallow copy is sufficient.
+  const loaded = await loadIndex(root);
+  const index: CodeIndex = force
+    ? { version: INDEX_VERSION, builtAt: "", files: {} }
+    : { ...loaded, files: { ...loaded.files } };
 
   const cfg = await loadConfig(root);
   const files: string[] = [];

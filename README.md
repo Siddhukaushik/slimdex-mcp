@@ -94,7 +94,7 @@ instructed to use only CodeGlance and one instructed to avoid it, and compare
 
 Being explicit, since the rest of this README is easy to over-read.
 
-**Covered by the unit suite** (`npm test` runs 92 tests across 8 files):
+**Covered by the unit suite** (`npm test` runs 110 tests across 9 files):
 
 - Symbol extraction across JS/TS (incl. class and object-literal methods),
   Python, Go, Rust, Java/C#, and comment skipping — `symbols.test.ts`
@@ -111,6 +111,8 @@ Being explicit, since the rest of this README is easy to over-read.
 - `get_symbol_context` `maxLines` budgeting and truncation notice
 
 - String/comment masking and brace-depth tracking — `lexer.test.ts`
+- Per-language extraction for all twelve supported languages — `languages.test.ts`
+- The index cache returns the same object until the index is rewritten
 
 **Covered end to end, through the real MCP server** (`integration.test.ts` spawns
 the server over stdio against a temporary fixture repo and asserts on output):
@@ -132,6 +134,59 @@ correctness assertions live in `integration.test.ts`.
 **Verified by inspection:** `src/` contains no network calls — no code leaves
 your machine. This one you can check yourself:
 `grep -rE "fetch\(|https?://|axios|http\.request" src/`.
+
+## Language coverage
+
+Measured against a fixture per language, counting the declarations a developer
+would actually want to navigate to. Current result: **65/65 found, 0 false
+positives**, pinned by `test/languages.test.ts`.
+
+| Language | Extensions | What's recognised |
+|---|---|---|
+| JavaScript / TypeScript | `.js .jsx .mjs .cjs .ts .tsx .vue .svelte` | classes, interfaces, types, enums, functions, top-level arrows, class and object-literal methods |
+| Apex | `.cls .trigger` | classes, inner classes, methods (incl. `@AuraEnabled`, `global`, generic returns), triggers |
+| Java | `.java` | classes, interfaces, enums, methods, generic methods with a leading `<T>` |
+| C# | `.cs` | classes, interfaces, structs, async and generic methods, virtual members |
+| Kotlin | `.kt` | classes, data classes, interfaces, `object`, `fun`, `suspend fun` |
+| Swift | `.swift` | classes, structs, enums, protocols, `func`, `static func` |
+| Python | `.py` | classes, `def`, `async def`, dunder and decorated methods |
+| Go | `.go` | funcs, receiver methods, struct and interface types |
+| Rust | `.rs` | structs, enums, traits, `fn`, `pub async fn`, impl methods |
+| Ruby | `.rb` | classes, modules, `def`, `def self.x` |
+| PHP | `.php` | classes, interfaces, traits, methods, functions |
+| Scala | `.scala` | classes, case classes, traits, objects, `def` with modifiers |
+| C / C++ / Objective-C | `.c .h .cpp .hpp .cc .m .mm` | classes, structs, enums, methods — the thinnest coverage here |
+
+## Performance
+
+Cold index is a full parse; warm is an mtime check per file. Measured on Windows,
+Node 24.
+
+| Repo | Files | Symbols | Cold index | Warm index | Typical query |
+|---|---:|---:|---:|---:|---:|
+| Salesforce DX org | 56 | 344 | 0.1 s | 15 ms | < 10 ms |
+| Java + React app | 356 | 1,713 | 0.42 s | 26 ms | 3–57 ms |
+| Synthetic stress | 5,000 | 50,000 | 1.5 s | 0.24 s | 5–22 ms |
+
+The index is held in memory and invalidated by the index file's mtime. Without
+that cache every tool call re-read and re-parsed the whole index — about 20 ms of
+dead weight per call on the 5,000-file repo, and it grew with the repo.
+
+`find_references` is the one slow tool at scale (~0.7 s across 5,000 files)
+because it is a textual scan of every file, not an index lookup. Scope it with
+`pathPrefix` when you know roughly where to look.
+
+## Memory across sessions
+
+`memory_save` writes to `<root>/.codeglance/memory.json`, which outlives the
+process — a fact saved in one chat is readable in the next, by a different
+client, after a restart. Chat and editor share one store only when both point at
+the same `CODEGLANCE_ROOT`.
+
+Nothing is captured automatically: the server never sees your conversation, so
+the agent has to decide what's worth keeping. The shipped `instructions` tell it
+to read memory first in a new session and to save decisions, constraints and
+gotchas as it learns them — but that's guidance to the model, not a guarantee.
 
 ## Known limitations
 
