@@ -35,6 +35,49 @@ describe("extractSymbols", () => {
     expect(names(rust)).toEqual(expect.arrayContaining(["run", "State", "Store"]));
   });
 
+  it("finds class and object-literal methods, not just the class", () => {
+    const src = [
+      "export class UserService {",
+      "  constructor(private db: string) {}",
+      "  async getUser(id: string): Promise<string> {",
+      "    return this.db;",
+      "  }",
+      "  get size(): number {",
+      "    return 1;",
+      "  }",
+      "  handleClose() {",
+      "  }",
+      "}",
+    ].join("\n");
+    expect(names(src)).toEqual(
+      expect.arrayContaining(["UserService", "constructor", "getUser", "size", "handleClose"])
+    );
+    expect(extractSymbols(src).find((s) => s.name === "getUser")!.kind).toBe("method");
+  });
+
+  it("does not mistake control flow for a method", () => {
+    // `if (cond) {` is shape-identical to `name(args) {` — only the keyword
+    // list tells them apart, so this is the regression that matters most.
+    const src = [
+      "function outer() {",
+      "  if (a) {",
+      "  }",
+      "  for (const x of y) {",
+      "  }",
+      "  while (z) {",
+      "  }",
+      "  switch (k) {",
+      "  }",
+      "}",
+    ].join("\n");
+    expect(names(src)).toEqual(["outer"]);
+  });
+
+  it("finds Java/C# methods where a return type precedes the name", () => {
+    const src = ["class Foo {", "  public async Task<int> GetUser(string id) {", "  }", "}"].join("\n");
+    expect(names(src)).toEqual(expect.arrayContaining(["Foo", "GetUser"]));
+  });
+
   it("skips comment lines", () => {
     const src = "// function fake() {}\n# def also_fake():\nfunction real() {}";
     expect(names(src)).toEqual(["real"]);

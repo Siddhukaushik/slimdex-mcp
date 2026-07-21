@@ -13,9 +13,14 @@ function resolve(fromFile: string, mod: string, files: Set<string>): string | nu
   // Relative JS/TS import
   if (mod.startsWith(".")) {
     const base = path.posix.join(path.posix.dirname(fromFile), mod);
+    // TypeScript's NodeNext/ESM convention writes `./outline.js` for a file that
+    // is actually `outline.ts`. Without stripping that extension the graph came
+    // out completely empty for every TS project using module: Node16/NodeNext.
+    const stripped = base.replace(/\.(js|mjs|cjs)$/, "");
     const candidates = [
       base,
       ...JS_EXT.map((e) => base + e),
+      ...(stripped !== base ? JS_EXT.map((e) => stripped + e) : []),
       ...JS_EXT.map((e) => path.posix.join(base, "index" + e)),
     ];
     for (const c of candidates) if (files.has(c)) return c;

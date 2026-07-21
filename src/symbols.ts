@@ -17,7 +17,18 @@ export interface SymbolDef {
 interface Rule {
   kind: string;
   re: RegExp; // must contain one capture group for the symbol name
+  reject?: Set<string>; // names that are never symbols (control-flow keywords)
 }
+
+// A bare `name(args) {` line is indistinguishable from `if (cond) {` by shape
+// alone, so the method rules below capture the name and then reject anything
+// that is actually a control-flow keyword. Without this, every `if`/`for`/
+// `catch` in the repo would be indexed as a method.
+const NOT_A_METHOD = new Set([
+  "if", "for", "while", "switch", "catch", "do", "else", "return", "function",
+  "typeof", "delete", "new", "await", "yield", "case", "throw", "with", "in",
+  "of", "try", "finally", "import", "export", "default",
+]);
 
 const RULES: Rule[] = [
   // ---- JS / TS ----
@@ -27,6 +38,22 @@ const RULES: Rule[] = [
   { kind: "enum", re: /\b(?:export\s+)?(?:const\s+)?enum\s+([A-Za-z0-9_$]+)/ },
   { kind: "function", re: /\b(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z0-9_$]+)/ },
   { kind: "function", re: /\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*[:=][^=]*=>/ },
+  // Class / object-literal methods: `async getUser(id): Promise<T> {`, `get name() {`,
+  // `constructor(x) {`. Requires leading indentation (methods are always nested)
+  // and a trailing `{`, which together with NOT_A_METHOD keeps `if (…) {` out.
+  {
+    kind: "method",
+    re: /^[ \t]+(?:(?:public|private|protected|static|readonly|abstract|override|async|get|set)\s+)*(?:\*\s*)?([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>]*>)?\s*\(.*\)\s*(?::\s*[^{;]+)?\{\s*\}?\s*$/,
+    reject: NOT_A_METHOD,
+  },
+  // Java / C# / C++ methods, where a return type sits between the modifiers and
+  // the name: `public async Task<int> GetUser(string id) {`. At least one
+  // modifier is required so this can't swallow arbitrary expressions.
+  {
+    kind: "method",
+    re: /^[ \t]+(?:(?:public|private|protected|internal|static|final|virtual|override|abstract|sealed|synchronized|async|unsafe)\s+)+[A-Za-z_$][A-Za-z0-9_$<>\[\],.]*\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(.*\)\s*(?:\{|$)/,
+    reject: NOT_A_METHOD,
+  },
   // ---- Python ----
   { kind: "class", re: /^\s*class\s+([A-Za-z0-9_]+)/ },
   { kind: "function", re: /^\s*(?:async\s+)?def\s+([A-Za-z0-9_]+)/ },
@@ -64,6 +91,7 @@ export function extractSymbols(source: string, maxSymbols = 2000): SymbolDef[] {
       const m = rule.re.exec(line);
       if (m && m[1]) {
         const name = m[1];
+        if (rule.reject?.has(name)) continue; // keyword, not a declaration — try the next rule
         const col = line.indexOf(name, m.index) + 1;
         const key = `${i + 1}:${name}`;
         if (!seen.has(key)) {

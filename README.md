@@ -11,14 +11,21 @@ model's context, an agent asks leanctx for exactly what it needs:
 | `get_file_skeleton` | Signatures with bodies elided, nesting preserved | A 2,000-line file becomes a ~50-line map |
 | `read_lines` | One line range | Read the 20 lines you need, not the 800-line file |
 | `get_symbol_context` | Just a function/class body ±2 lines | ~95% saved vs reading the whole file for one symbol |
-| `search_code` | `path:line:col` + the matching line (+ caret highlight) | No file dumps; `limit` + `offset`/opaque-`cursor` pagination |
+| `search_code` | `path:line:col` + the matching line (+ caret highlight) | No file dumps; `limit` + `offset`/opaque-`cursor` pagination; exact totals |
 | `find_definition` | Definition site(s) of a symbol as `path:line:col` | Go-to-definition without loading files |
+| `search_symbols` | Fuzzy symbol-name lookup, ranked exact→prefix→substring→subsequence | Index-only; finds a half-remembered name without a noisy text search |
 | `find_references` | References as `path:line:col` **+ enclosing function** | Lightweight call-hierarchy; locations only |
 | `get_context` | **One call**: opt-in definition / signature / callers / imports / dependents, budgeted | Replaces ~5 tool calls with one bounded brief |
-| `repo_map` | Dir-level file/line/symbol counts | Orient in one small response |
+| `repo_map` | Dir-level file/line/symbol counts; `path:` drills into a dir's largest files | Orient in one small response |
+| `changed_files` | Changed files + **which symbols each hunk lands in** | Session start on a dirty repo without the patch in context |
 | `dep_graph` | `imports` / `dependents` / a Mermaid diagram (`root`+`depth` BFS) | Graph notation compresses relationships far better than JSON |
+| `stats` | Per-tool call counts and response sizes | Shows which tool actually produces your context |
 | `batch` | Runs several calls in one request | Cuts per-call MCP protocol overhead |
 | `memory_save/search/list/delete` | Durable notes in `.leanctx/memory.json` | Persistent memory across restarts |
+
+The retrieval discipline below is also shipped in the server's MCP `instructions`,
+so every client injects it into the model's context automatically — it isn't
+guidance that only lives in this README.
 
 ### Recommended agent flow (max token savings)
 
@@ -42,12 +49,15 @@ way. This directly follows the peer-review guidance: skip model-specific token
 {
   "ignoreDirs": ["fixtures", "snapshots"],
   "extensions": [".astro", ".vue"],
-  "exclude": ["generated/", "legacy/vendor"]
+  "exclude": ["generated/", "legacy/vendor"],
+  "maxFileBytes": 2000000
 }
 ```
 
 Merged on top of the built-in ignore list (`node_modules`, `dist`, `.venv`, …),
-so vendor/build dirs never blow up your context.
+so vendor/build dirs never blow up your context. `index_repo` echoes what it
+loaded and warns about unknown keys, wrong types, or invalid JSON — a typo'd
+config is never silently indistinguishable from having none.
 
 ### How the token saving actually works
 
@@ -66,9 +76,17 @@ it's honest — no code is sent to any third party, everything runs locally.
   confuse it (`#` is also the JS private-field sigil, so it can't be stripped
   blindly).
 - Symbol extraction is **regex-based and heuristic**, not a full parser or LSP.
-  It supports JS/TS, Python, Go, Rust, Java/C#, Ruby, and common C-family
-  syntax. It can miss unusual declarations and `find_references` is a *textual*
-  match (may include same-named but unrelated identifiers).
+  It supports JS/TS (including class and object-literal methods), Python, Go,
+  Rust, Java/C#, Ruby, and common C-family syntax. It can miss unusual
+  declarations and `find_references` is a *textual* match (may include
+  same-named but unrelated identifiers).
+- `changed_files` attributes a hunk to the **nearest preceding declaration**,
+  which is right for a normal function body and approximate for code between
+  declarations. Treat it as blast radius, not a call graph.
+- `search_code` counts every occurrence on a line and reports an exact total,
+  but stops at an internal scan cap on very large result sets — when that
+  happens the total is printed as `N+ (scan cap reached)` rather than a
+  confident wrong number.
 - For LSP-grade precision you'd swap the parser for tree-sitter or a real
   language server. `src/parser.ts` is the seam for exactly this: a `Parser`
   interface selected by `LEANCTX_PARSER`, with the regex parser as the default
@@ -110,13 +128,18 @@ it on demand:
 cd leanctx-mcp
 npm install
 npm run build      # produces dist/index.js
-npm test           # 38 unit tests
+npm test           # vitest unit suite
 ```
 
-Verify it runs against any repo:
+The tests pin down the heuristics everything else rests on — symbol extraction,
+block detection, search counting, import resolution — because those regress
+silently: a missing regex rule doesn't throw, it just returns fewer symbols.
+
+Verify it runs end to end against any repo:
 
 ```bash
-node smoke-test.mjs "C:/path/to/some/repo"
+npm run smoke                              # this repo
+node smoke-test.mjs "C:/path/to/some/repo" # any other
 ```
 
 ### Environment variables

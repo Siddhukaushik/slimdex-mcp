@@ -14,21 +14,44 @@ export interface Match {
   highlight?: string;
 }
 
+export interface SearchResult {
+  matches: Match[]; // just the requested window
+  total: number; // matches counted across the whole scan
+  exact: boolean; // false when the scan cap tripped, i.e. total is a lower bound
+}
+
 function caret(text: string, col: number, len: number): string {
   const trimmedLead = text.length - text.trimStart().length;
   const pad = Math.max(0, col - 1 - trimmedLead);
   return " ".repeat(pad) + "^".repeat(Math.max(1, len));
 }
 
+// Every occurrence on a line is a match, not just the first. The old
+// one-exec-per-line version silently undercounted lines like
+// `foo(foo(x))`, which made `total` — and find_references — wrong.
+// `perLineCap` stops a pathological minified line from flooding the window.
+const PER_LINE_CAP = 10;
+
 export async function searchFiles(
   root: string,
   files: string[], // repo-relative posix paths
   pattern: string,
-  opts: { regex?: boolean; ignoreCase?: boolean; maxMatches?: number; offset?: number; highlight?: boolean } = {}
-): Promise<{ matches: Match[]; total: number }> {
+  opts: {
+    regex?: boolean;
+    ignoreCase?: boolean;
+    maxMatches?: number;
+    offset?: number;
+    highlight?: boolean;
+    scanCap?: number;
+  } = {}
+): Promise<SearchResult> {
   const max = opts.maxMatches ?? 200;
   const offset = Math.max(0, opts.offset ?? 0);
-  const limit = offset + max; // collect enough to satisfy the offset window
+  // Scan past the requested window so `total` is a real count rather than
+  // "however many we happened to need". Bounded so a huge repo can't turn one
+  // search into an unbounded read of every file.
+  const scanCap = Math.max(opts.scanCap ?? 1000, offset + max);
+
   let re: RegExp;
   try {
     re = opts.regex
@@ -39,8 +62,7 @@ export async function searchFiles(
   }
 
   const out: Match[] = [];
-  for (const rel of files) {
-    if (out.length >= limit) break;
+  outer: for (const rel of files) {
     let source: string;
     try {
       source = await fs.readFile(path.join(root, rel), "utf8");
@@ -48,21 +70,24 @@ export async function searchFiles(
       continue;
     }
     const lines = source.split(/\r?\n/);
-    for (let i = 0; i < lines.length && out.length < limit; i++) {
+    for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
       re.lastIndex = 0;
-      const m = re.exec(line);
-      if (m) {
+      let m: RegExpExecArray | null;
+      let onThisLine = 0;
+      while ((m = re.exec(line)) !== null) {
         const col = m.index + 1;
         const match: Match = { file: rel, line: i + 1, col, text: line.trim().slice(0, 240) };
         if (opts.highlight) match.highlight = caret(line, col, m[0].length).slice(0, 240);
         out.push(match);
+        if (++onThisLine >= PER_LINE_CAP) break;
+        if (out.length >= scanCap) break outer;
+        if (m.index === re.lastIndex) re.lastIndex++; // zero-width match: don't spin
       }
     }
   }
-  // `total` is a lower bound: we stop scanning once the offset window is full,
-  // so it reflects "at least this many" rather than an exhaustive count.
-  return { matches: out.slice(offset), total: out.length };
+
+  return { matches: out.slice(offset, offset + max), total: out.length, exact: out.length < scanCap };
 }
 
 // Opaque cursor for stable pagination. It encodes the next offset plus the
