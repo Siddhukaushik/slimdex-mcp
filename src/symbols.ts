@@ -7,17 +7,25 @@
 // miss unusual syntax and will not resolve overloads or scoping. Treat results
 // as strong hints, not ground truth.
 
+import { scanLines } from "./lexer.js";
+
 export interface SymbolDef {
   name: string;
   kind: string;
   line: number; // 1-indexed
   col: number; // 1-indexed (column where the name starts)
+  depth?: number; // brace nesting at the declaration; 0 = top level
 }
 
 interface Rule {
   kind: string;
   re: RegExp; // must contain one capture group for the symbol name
   reject?: Set<string>; // names that are never symbols (control-flow keywords)
+  // `const x = () => …` and `type X = …` are declarations at top level and
+  // *locals* anywhere else. Indexing every local closure inside a function body
+  // buries the real declarations in noise, which is the opposite of this
+  // server's job — so these rules only fire at depth 0.
+  topLevelOnly?: boolean;
 }
 
 // A bare `name(args) {` line is indistinguishable from `if (cond) {` by shape
@@ -34,10 +42,12 @@ const RULES: Rule[] = [
   // ---- JS / TS ----
   { kind: "class", re: /\b(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+([A-Za-z0-9_$]+)/ },
   { kind: "interface", re: /\b(?:export\s+)?interface\s+([A-Za-z0-9_$]+)/ },
-  { kind: "type", re: /\b(?:export\s+)?type\s+([A-Za-z0-9_$]+)\s*[=<]/ },
+  { kind: "type", re: /\b(?:export\s+)?type\s+([A-Za-z0-9_$]+)\s*[=<]/, topLevelOnly: true },
   { kind: "enum", re: /\b(?:export\s+)?(?:const\s+)?enum\s+([A-Za-z0-9_$]+)/ },
-  { kind: "function", re: /\b(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s*\*?\s*([A-Za-z0-9_$]+)/ },
-  { kind: "function", re: /\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*[:=][^=]*=>/ },
+  // The `\b` after `function` is load-bearing: without it the word "functions"
+  // in prose matched, with `\s*` matching empty and `s` captured as the name.
+  { kind: "function", re: /\b(?:export\s+)?(?:default\s+)?(?:async\s+)?function\b\s*\*?\s*([A-Za-z0-9_$]+)/ },
+  { kind: "function", re: /\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z0-9_$]+)\s*[:=][^=]*=>/, topLevelOnly: true },
   // Class / object-literal methods: `async getUser(id): Promise<T> {`, `get name() {`,
   // `constructor(x) {`. Requires leading indentation (methods are always nested)
   // and a trailing `{`, which together with NOT_A_METHOD keeps `if (…) {` out.
@@ -79,24 +89,27 @@ function isComment(line: string): boolean {
 }
 
 export function extractSymbols(source: string, maxSymbols = 2000): SymbolDef[] {
-  const lines = source.split(/\r?\n/);
   const out: SymbolDef[] = [];
   const seen = new Set<string>();
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.trim() || isComment(line)) continue;
+  // Rules are matched against the *masked* line, where string and comment
+  // contents have been blanked to spaces. Prose that happens to look like a
+  // declaration ("…the functions you need…") no longer registers as one, and
+  // because masking preserves length, columns still point into the real line.
+  for (const [i, { line, masked, depth }] of scanLines(source).entries()) {
+    if (!masked.trim() || isComment(line)) continue;
 
     for (const rule of RULES) {
-      const m = rule.re.exec(line);
+      const m = rule.re.exec(masked);
       if (m && m[1]) {
         const name = m[1];
         if (rule.reject?.has(name)) continue; // keyword, not a declaration — try the next rule
-        const col = line.indexOf(name, m.index) + 1;
+        if (rule.topLevelOnly && depth > 0) continue; // a local, not a declaration
+        const col = masked.indexOf(name, m.index) + 1;
         const key = `${i + 1}:${name}`;
         if (!seen.has(key)) {
           seen.add(key);
-          out.push({ name, kind: rule.kind, line: i + 1, col: col > 0 ? col : 1 });
+          out.push({ name, kind: rule.kind, line: i + 1, col: col > 0 ? col : 1, depth });
         }
         break; // one symbol per line
       }
@@ -123,11 +136,13 @@ const IMPORT_RULES: RegExp[] = [
 ];
 
 export function extractImports(source: string): ImportRef[] {
-  const lines = source.split(/\r?\n/);
   const out: ImportRef[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.trim() || isComment(line)) continue;
+  // Imports are matched on the real line, not the masked one: the module
+  // specifier *is* a string, so masking would blank the very thing we capture.
+  // The masked line is still used to reject lines that are entirely inside a
+  // comment or a template literal — an `import` written in prose isn't an edge.
+  for (const [i, { line, masked }] of scanLines(source).entries()) {
+    if (!line.trim() || isComment(line) || !masked.trim()) continue;
     for (const re of IMPORT_RULES) {
       const m = re.exec(line);
       if (m && m[1]) {

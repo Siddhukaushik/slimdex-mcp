@@ -103,3 +103,75 @@ describe("extractImports", () => {
     expect(extractImports(rs).map((i) => i.module)).toEqual(["crate::store"]);
   });
 });
+
+// ---- Regressions found by running codeglance on its own source (2026-07-21) ----
+
+describe("extractSymbols — string/comment awareness", () => {
+  it("does not capture 's' from the word 'functions' in prose", () => {
+    // The old rule was /function\s*\*?\s*(name)/ with no word boundary, so in
+    // "functions" it matched `function` + empty \s* and captured `s`.
+    const syms = extractSymbols("// see the functions you actually need\nconst x = 1;");
+    expect(syms.find((s) => s.name === "s")).toBeUndefined();
+  });
+
+  it("ignores declarations written inside a template literal", () => {
+    const src = [
+      "const INSTRUCTIONS = `",
+      "1. call function helper() first",
+      "2. then class Widget {",
+      "`;",
+      "function real() {}",
+    ].join("\n");
+    const names = extractSymbols(src).map((s) => s.name);
+    expect(names).toContain("real");
+    expect(names).not.toContain("helper");
+    expect(names).not.toContain("Widget");
+  });
+
+  it("ignores declarations inside a block comment", () => {
+    const src = ["/*", " * function ghost() {}", " */", "function real() {}"].join("\n");
+    const names = extractSymbols(src).map((s) => s.name);
+    expect(names).toEqual(["real"]);
+  });
+
+  it("still finds a generator declaration", () => {
+    expect(extractSymbols("function* gen() {}").map((s) => s.name)).toContain("gen");
+  });
+});
+
+describe("extractSymbols — depth", () => {
+  it("excludes locals declared inside a function body", () => {
+    const src = [
+      "function outer() {",
+      "  const rows = items.map((m) => m.id);",
+      "  type Local = { a: number };",
+      "}",
+    ].join("\n");
+    const names = extractSymbols(src).map((s) => s.name);
+    expect(names).toEqual(["outer"]);
+  });
+
+  it("keeps a top-level arrow function and type alias", () => {
+    const src = ["export const handler = (req) => req;", "export type Config = { a: number };"].join("\n");
+    const names = extractSymbols(src).map((s) => s.name);
+    expect(names).toContain("handler");
+    expect(names).toContain("Config");
+  });
+
+  it("keeps class methods, which are legitimately nested", () => {
+    const src = ["class Service {", "  async getUser(id) {", "    return id;", "  }", "}"].join("\n");
+    const syms = extractSymbols(src);
+    expect(syms.map((s) => s.name)).toEqual(["Service", "getUser"]);
+    expect(syms.find((s) => s.name === "getUser")!.depth).toBe(1);
+  });
+
+  it("records depth 0 for top-level declarations", () => {
+    expect(extractSymbols("function a() {}")[0].depth).toBe(0);
+  });
+
+  it("reports a column that indexes into the original line", () => {
+    const line = `  const greet = (n) => n;`;
+    const s = extractSymbols(line)[0];
+    expect(line.slice(s.col - 1, s.col - 1 + s.name.length)).toBe("greet");
+  });
+});

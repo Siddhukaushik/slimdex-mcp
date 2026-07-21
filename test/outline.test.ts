@@ -31,3 +31,27 @@ describe("outline", () => {
     expect(outline(src).some((e) => e.kind === "method" && e.text.includes("handle"))).toBe(true);
   });
 });
+
+// ---- Same regressions as symbols.ts: outline.ts had its own copy of both bugs ----
+
+describe("outline — string/comment awareness", () => {
+  it("does not report prose containing the word 'functions'", () => {
+    const entries = outline("const s = `read only the functions you need`;\nfunction real() {}");
+    expect(entries.map((e) => e.kind + ":" + e.line)).toEqual(["function:2"]);
+  });
+
+  it("ignores declarations inside a block comment", () => {
+    const entries = outline(["/*", " function ghost() {}", "*/", "function real() {}"].join("\n"));
+    expect(entries.length).toBe(1);
+    expect(entries[0].line).toBe(4);
+  });
+
+  it("excludes locals nested in a function body", () => {
+    const src = ["function outer() {", "  const inner = (x) => x;", "}"].join("\n");
+    expect(outline(src).map((e) => e.line)).toEqual([1]);
+  });
+
+  it("keeps a top-level arrow function", () => {
+    expect(outline("export const handler = (req) => {").length).toBe(1);
+  });
+});

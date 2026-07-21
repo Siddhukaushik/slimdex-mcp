@@ -12,61 +12,16 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { CodeIndex, FileEntry } from "./store.js";
 import { buildGraph, dependents } from "./graph.js";
+import { braceDelta, type ScanState } from "./lexer.js";
 
 function leadingWS(line: string): number {
   return line.length - line.trimStart().length;
 }
 
-// Carry-over lexer state for brace counting across lines. Only block comments
-// and template literals legitimately span lines; ' and " strings reset at EOL
-// so one unbalanced quote can't poison the rest of the file.
-interface ScanState {
-  inBlockComment: boolean;
-  stringChar: string | null; // "'", '"', or "`"
-}
-
-// Count braces on one line, skipping those inside strings and comments.
-// Known gap (documented): inline `#` comments (Python) are not stripped,
-// because `#` is also the JS private-field sigil; full-line `#` comments are
-// handled by the caller.
-export function braceDelta(line: string, st: ScanState): { open: number; close: number } {
-  let open = 0;
-  let close = 0;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    const next = line[i + 1];
-    if (st.inBlockComment) {
-      if (ch === "*" && next === "/") {
-        st.inBlockComment = false;
-        i++;
-      }
-      continue;
-    }
-    if (st.stringChar) {
-      if (ch === "\\") {
-        i++; // skip escaped char
-      } else if (ch === st.stringChar) {
-        st.stringChar = null;
-      }
-      continue;
-    }
-    if (ch === "/" && next === "*") {
-      st.inBlockComment = true;
-      i++;
-      continue;
-    }
-    if (ch === "/" && next === "/") break; // line comment: ignore the rest
-    if (ch === "'" || ch === '"' || ch === "`") {
-      st.stringChar = ch;
-      continue;
-    }
-    if (ch === "{") open++;
-    else if (ch === "}") close++;
-  }
-  // ' and " don't span lines; only ` (template literal) carries over.
-  if (st.stringChar === "'" || st.stringChar === '"') st.stringChar = null;
-  return { open, close };
-}
+// The line lexer moved to lexer.ts so symbols.ts and outline.ts can share it
+// without importing this module (which would close a cycle through store.ts).
+// Re-exported here because it has always been part of this module's surface.
+export { braceDelta, type ScanState } from "./lexer.js";
 
 // Given a 1-indexed definition line, return the inclusive [start,end] span of
 // its body. Braces win when present (counted string/comment-aware); otherwise
@@ -155,13 +110,19 @@ export async function getSymbolContext(
   kind: string,
   before = 2,
   after = 2,
-  maxLines = 200
+  maxLines = 200,
+  // Line of the next declaration in this file, if known. The ±N padding is
+  // meant to catch a decorator or a trailing comment, not to spill the whole of
+  // the following function into a response whose entire purpose is "just this
+  // symbol" — so padding stops short of the next declaration.
+  nextDefLine?: number
 ): Promise<SymbolContext> {
   const source = await fs.readFile(path.join(root, file), "utf8");
   const lines = source.split(/\r?\n/);
   const block = extractBlock(lines, defLine);
+  const ceiling = nextDefLine && nextDefLine > block.end ? nextDefLine - 1 : lines.length;
   const s = Math.max(1, block.start - before);
-  const eFull = Math.min(lines.length, block.end + after);
+  const eFull = Math.min(lines.length, block.end + after, ceiling);
   const loc = block.end - block.start + 1;
   const e = Math.min(eFull, s + maxLines - 1);
   const shown = lines.slice(s - 1, e).map((l, i) => `${String(s + i).padStart(5)}  ${l}`).join("\n");

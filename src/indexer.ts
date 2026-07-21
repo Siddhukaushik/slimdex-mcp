@@ -5,7 +5,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { getParser } from "./parser.js";
-import { loadIndex, saveIndex, type CodeIndex, type FileEntry } from "./store.js";
+import { loadIndex, saveIndex, INDEX_VERSION, type CodeIndex, type FileEntry } from "./store.js";
 
 const IGNORE_DIRS = new Set([
   ".git", "node_modules", "dist", "build", "out", ".next", ".nuxt", "target",
@@ -142,7 +142,7 @@ export interface IndexResult {
 }
 
 export async function buildOrRefresh(root: string, force = false): Promise<IndexResult> {
-  const index = force ? { version: 1 as const, builtAt: "", files: {} } : await loadIndex(root);
+  const index = force ? { version: INDEX_VERSION, builtAt: "", files: {} } : await loadIndex(root);
 
   const cfg = await loadConfig(root);
   const files: string[] = [];

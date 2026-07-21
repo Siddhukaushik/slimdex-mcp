@@ -68,7 +68,7 @@ const INSTRUCTIONS = `codeglance replaces "read the whole file" with narrow retr
 // ---------------------------------------------------------------------------
 type Handler = (args: any) => Promise<string>;
 const handlers: Record<string, Handler> = {};
-const server = new McpServer({ name: "codeglance", version: "0.5.0" }, { instructions: INSTRUCTIONS });
+const server = new McpServer({ name: "codeglance", version: "0.6.0" }, { instructions: INSTRUCTIONS });
 
 function tool(name: string, meta: { title: string; description: string; inputSchema: any }, fn: Handler) {
   handlers[name] = fn;
@@ -344,7 +344,15 @@ tool(
     } else {
       return "Provide either name, or path + line.";
     }
-    const ctx = await getSymbolContext(ROOT, file, defLine, kind, before ?? 2, after ?? 2, maxLines ?? 200);
+    // The next declaration in the same file bounds the trailing padding, so a
+    // "just this symbol" response can't spill into the following function.
+    const siblings = (index.files[file]?.symbols ?? [])
+      .map((sym) => sym.line)
+      .filter((l) => l > defLine)
+      .sort((a, b) => a - b);
+    const ctx = await getSymbolContext(
+      ROOT, file, defLine, kind, before ?? 2, after ?? 2, maxLines ?? 200, siblings[0]
+    );
     return `${ctx.file}:${ctx.line}  ${ctx.kind}  (${ctx.loc} LOC)\n${ctx.text}`;
   }
 );
@@ -620,7 +628,7 @@ tool(
 // ---------------------------------------------------------------------------
 async function main() {
   await server.connect(new StdioServerTransport());
-  console.error(`codeglance-mcp v0.5.0 ready. root=${ROOT}  tools=${Object.keys(handlers).length}`);
+  console.error(`codeglance-mcp v0.6.0 ready. root=${ROOT}  tools=${Object.keys(handlers).length}`);
   // Opt-in auto-reindex on file change. Off unless CODEGLANCE_WATCH is truthy.
   if (["1", "true", "yes"].includes((process.env.CODEGLANCE_WATCH || "").toLowerCase())) {
     const { startWatcher } = await import("./watch.js");

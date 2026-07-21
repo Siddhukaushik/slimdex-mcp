@@ -1,6 +1,6 @@
 {
   "name": "codeglance-mcp",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "A local MCP server for narrow code retrieval: outlines, symbol context, a dependency graph, and persistent memory instead of whole-file reads.",
   "type": "module",
   "keywords": [

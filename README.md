@@ -94,7 +94,7 @@ instructed to use only CodeGlance and one instructed to avoid it, and compare
 
 Being explicit, since the rest of this README is easy to over-read.
 
-**Covered by the unit suite** (47 tests, 6 files — `npm test`):
+**Covered by the unit suite** (`npm test` runs 92 tests across 8 files):
 
 - Symbol extraction across JS/TS (incl. class and object-literal methods),
   Python, Go, Rust, Java/C#, and comment skipping — `symbols.test.ts`
@@ -110,20 +110,24 @@ Being explicit, since the rest of this README is easy to over-read.
 - Outline declaration detection vs. control flow — `outline.test.ts`
 - `get_symbol_context` `maxLines` budgeting and truncation notice
 
-Note these test the underlying functions, not the MCP tool handlers that wrap
-them. CI runs the build and suite on Ubuntu + Windows, Node 20 and 22.
+- String/comment masking and brace-depth tracking — `lexer.test.ts`
 
-**Exercised only by the end-to-end smoke test** (`npm run smoke` — asserts only
-that the server starts and the tool returns something, never that the output is
-correct): `index_repo`, `repo_map`, `search_code`, `search_symbols`,
-`changed_files`, `memory_save`, `memory_list`, `stats`.
+**Covered end to end, through the real MCP server** (`integration.test.ts` spawns
+the server over stdio against a temporary fixture repo and asserts on output):
+`index_repo`, `repo_map`, `read_lines`, `get_file_skeleton`, `outline_file`,
+`get_symbol_context`, `find_definition`, `find_references`, `get_context`
+(including its `maxChars` cap), `dep_graph` (imports + mermaid), `batch`,
+`search_code`, `search_symbols`, `stats`, the `memory_save/search/list/delete`
+round trip, the path-escape guard, and the not-found paths.
 
-**No test coverage of any kind:** `read_lines`, `get_file_skeleton`,
-`find_definition`, `find_references`, `get_context`, `dep_graph`, `batch`,
-`memory_search`, `memory_delete`, file watching (`src/watch.ts`), and
-`.codeglance.json` config loading. Several of these sit on unit-tested
-foundations, but the tools themselves are only manually exercised and will
-regress silently.
+CI runs the build and both suites on Ubuntu + Windows, Node 20 and 22.
+
+**Still untested:** file watching (`src/watch.ts`), `.codeglance.json` config
+loading, and `changed_files` (`src/git.ts`), which needs a git fixture. These are
+manually exercised only and can regress silently.
+
+`npm run smoke` still exists but proves only that the pipeline is alive — the
+correctness assertions live in `integration.test.ts`.
 
 **Verified by inspection:** `src/` contains no network calls — no code leaves
 your machine. This one you can check yourself:
@@ -134,9 +138,15 @@ your machine. This one you can check yourself:
 - Symbol extraction is **regex-based and heuristic**, not a parser or LSP. It can
   miss unusual declarations, and `find_references` is a **textual** match that may
   include same-named but unrelated identifiers.
-- Block extraction is string- and comment-aware, but an *inline* Python `#`
-  comment containing a brace can still confuse it (`#` is also the JS
-  private-field sigil, so it can't be stripped blindly).
+- Symbol and outline extraction now run against a **masked** copy of each line,
+  with string and comment contents blanked out, so declaration-shaped prose
+  inside a template literal is no longer indexed as code. Declarations are also
+  **depth-aware**: a `const x = () => …` or `type X = …` counts only at top
+  level, because locals inside a function body are not things anyone navigates
+  to. Class methods are still indexed at their nesting depth.
+- An *inline* Python `#` comment containing a brace can still confuse block
+  extraction (`#` is also the JS private-field sigil, so it can't be stripped
+  blindly).
 - `changed_files` attributes a hunk to the **nearest preceding declaration** —
   right for a normal function body, approximate for code between declarations.
   Treat it as blast radius, not a call graph.
@@ -201,7 +211,9 @@ node smoke-test.mjs "C:/path/to/some/repo"   # any other
 
 Per repository, CodeGlance writes to `<repo>/.codeglance/`:
 
-- `index.json` — the code index (mtime-invalidated per file)
+- `index.json` — the code index (mtime-invalidated per file, and discarded
+  wholesale when the index format version changes, so a stale index built by an
+  older extractor is never reused)
 - `memory.json` — saved memory facts
 - `stats.json` — per-tool usage counters
 

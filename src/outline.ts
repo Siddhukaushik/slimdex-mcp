@@ -7,6 +7,8 @@
 // intentional: the goal is a cheap, language-agnostic map that costs a few
 // hundred tokens instead of dumping a multi-thousand-token file.
 
+import { scanLines } from "./lexer.js";
+
 export interface OutlineEntry {
   line: number; // 1-indexed
   kind: string;
@@ -17,6 +19,7 @@ interface Rule {
   kind: string;
   re: RegExp;
   reject?: Set<string>; // captured names that are keywords, not declarations
+  topLevelOnly?: boolean; // see symbols.ts: locals are not declarations
 }
 
 // Mirrors symbols.ts: a bare `name(args) {` looks exactly like `if (cond) {`,
@@ -31,16 +34,19 @@ const COMMON: Rule[] = [
   // JS / TS
   { kind: "class", re: /^\s*(export\s+)?(default\s+)?(abstract\s+)?class\s+([A-Za-z0-9_]+)/ },
   { kind: "interface", re: /^\s*(export\s+)?interface\s+([A-Za-z0-9_]+)/ },
-  { kind: "type", re: /^\s*(export\s+)?type\s+([A-Za-z0-9_]+)\s*=/ },
+  { kind: "type", re: /^\s*(export\s+)?type\s+([A-Za-z0-9_]+)\s*=/, topLevelOnly: true },
   { kind: "enum", re: /^\s*(export\s+)?(const\s+)?enum\s+([A-Za-z0-9_]+)/ },
   {
+    // `function\b` — without the boundary, the word "functions" in prose matched
+    // and reported itself as a declaration. See symbols.ts.
     kind: "function",
-    re: /^\s*(export\s+)?(default\s+)?(async\s+)?function\s*\*?\s*([A-Za-z0-9_]+)/,
+    re: /^\s*(export\s+)?(default\s+)?(async\s+)?function\b\s*\*?\s*([A-Za-z0-9_]+)/,
   },
   // const foo = (...) => / const foo = async (...) =>
   {
     kind: "function",
     re: /^\s*(export\s+)?(const|let|var)\s+([A-Za-z0-9_]+)\s*[:=].*=>\s*\{?\s*$/,
+    topLevelOnly: true,
   },
   // JS/TS class & object-literal methods (see NOT_A_METHOD above)
   {
@@ -82,17 +88,19 @@ function isComment(line: string): boolean {
 }
 
 export function outline(source: string, maxEntries = 400): OutlineEntry[] {
-  const lines = source.split(/\r?\n/);
   const entries: OutlineEntry[] = [];
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.trim() || isComment(line)) continue;
+  // Matched against the masked line so declaration-shaped prose inside strings
+  // and block comments doesn't become an outline entry. The displayed `text`
+  // still comes from the real line.
+  for (const [i, { line, masked, depth }] of scanLines(source).entries()) {
+    if (!masked.trim() || isComment(line)) continue;
 
     for (const rule of COMMON) {
-      const m = rule.re.exec(line);
+      const m = rule.re.exec(masked);
       if (m) {
         if (rule.reject && m[1] && rule.reject.has(m[1])) continue;
+        if (rule.topLevelOnly && depth > 0) continue; // a local, not a declaration
         entries.push({
           line: i + 1,
           kind: rule.kind,

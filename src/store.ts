@@ -17,8 +17,15 @@ export interface FileEntry {
   imports: ImportRef[];
 }
 
+// Bumped 1 -> 2 when symbol extraction became string/comment-aware and gained
+// depth. A v1 index on disk was built by the old extractor and is full of
+// declarations that don't exist (prose captured from inside template literals,
+// locals reported as top-level), so it must be discarded rather than reused —
+// mtime invalidation alone would keep serving the bad entries indefinitely.
+export const INDEX_VERSION = 2;
+
 export interface CodeIndex {
-  version: 1;
+  version: number;
   builtAt: string;
   files: Record<string, FileEntry>; // key: repo-relative posix path
 }
@@ -47,11 +54,11 @@ export async function loadIndex(root: string): Promise<CodeIndex> {
   try {
     const raw = await fs.readFile(path.join(dir(root), "index.json"), "utf8");
     const parsed = JSON.parse(raw);
-    if (parsed && parsed.version === 1 && parsed.files) return parsed as CodeIndex;
+    if (parsed && parsed.version === INDEX_VERSION && parsed.files) return parsed as CodeIndex;
   } catch {
     /* fall through to fresh */
   }
-  return { version: 1, builtAt: new Date().toISOString(), files: {} };
+  return { version: INDEX_VERSION, builtAt: new Date().toISOString(), files: {} };
 }
 
 export async function saveIndex(root: string, index: CodeIndex): Promise<void> {
