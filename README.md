@@ -94,7 +94,7 @@ instructed to use only CodeGlance and one instructed to avoid it, and compare
 
 Being explicit, since the rest of this README is easy to over-read.
 
-**Covered by the unit suite** (`npm test` runs 110 tests across 9 files):
+**Covered by the unit suite** (`npm test` runs 121 tests across 9 files):
 
 - Symbol extraction across JS/TS (incl. class and object-literal methods),
   Python, Go, Rust, Java/C#, and comment skipping — `symbols.test.ts`
@@ -148,9 +148,44 @@ In [`docs/`](docs/):
 
 ## Language coverage
 
-Measured against a fixture per language, counting the declarations a developer
-would actually want to navigate to. Current result: **65/65 found, 0 false
-positives**, pinned by `test/languages.test.ts`.
+Two measurements, because fixtures alone prove very little.
+
+**Fixtures** — one per language, counting the declarations a developer would
+actually navigate to: **65/65 found, 0 false positives**, pinned by
+`test/languages.test.ts`.
+
+**Real third-party code** — extraction run over ~11,800 files from several
+hundred real packages (React, Babel, Remix, Socket.io, Playwright, Three.js,
+Emotion, zod, ajv …) and compared against an independently written heuristic for
+what counts as a declaration: **95.9% recall**. Reproduce it yourself:
+
+```bash
+npm run audit -- ./node_modules            # or any directory of code you didn't write
+```
+
+That number is a floor, not a grade — the truth heuristic counts some
+non-declarations, so real recall is a little higher. What it's for is catching
+regressions and finding the next real gap.
+
+### About frameworks
+
+Almost nothing that failed the audit was framework-specific. Frameworks add
+annotations, decorators and conventions; they rarely invent syntax. Handle the
+language and the frameworks come with it — fflib's Application/Domain/Selector/
+Service/UnitOfWork layers extract completely (129 declarations) without a single
+fflib-aware rule.
+
+The one genuine exception is **test DSLs**. A vitest/jest/mocha/RSpec file often
+has no top-level declarations at all, so entire test directories used to index to
+nothing. `describe`/`it`/`test` titles are now indexed as kind `test`, which is
+what you actually navigate to in a test file.
+
+What is *not* covered is framework **semantics**. `Application.Service.newInstance(IAccountService.class)`
+resolves at runtime, so `find_references` cannot connect it to the concrete
+class; the same is true of any dependency-injection container, and of
+trigger-to-handler wiring done in metadata. Decoupling is the point of those
+frameworks, and that decoupling is exactly what hides the edge from a static
+reader. Search for the interface name instead.
 
 | Language | Extensions | What's recognised |
 |---|---|---|
@@ -243,6 +278,15 @@ measured results:
   the earlier payload is gone, so the reference resolves to nothing.
 - **Embeddings / semantic search** — large dependency footprint; possible future
   optional flag, not a default.
+- **A tree-sitter parser backend** — this is the one that would close the
+  remaining ~4%, and it was costed rather than hand-waved: `web-tree-sitter` is
+  WASM so it needs no native compilation, but the grammars
+  (`tree-sitter-wasms`) are **51.7 MB** unpacked against ~4.5 MB for the whole
+  current install. Evaluated and declined at 95.9% measured recall, because
+  "installs in a second, runs offline, no configuration" is the property this
+  server exists to have. `src/parser.ts` remains the seam if that calculus ever
+  changes — a backend drops in there without touching a tool or the index
+  format.
 
 ---
 
