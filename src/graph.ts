@@ -65,26 +65,65 @@ export function dependents(graph: GraphEdges, target: string): string[] {
   return out;
 }
 
-// Compact Mermaid rendering of the internal import graph (optionally scoped to
-// a subtree) so an IDE that renders Mermaid shows an actual diagram.
-export function toMermaid(graph: GraphEdges, scope?: string, maxEdges = 120): string {
+// Compact Mermaid rendering of the internal import graph.
+//   - scope:   only include files under this path prefix
+//   - root:    start from this file and walk outward (BFS) instead of dumping
+//              everything — keeps a monorepo graph from exploding
+//   - depth:   how many import hops to follow from root (default 2)
+// Without a root, it renders scoped/whole-graph edges as before (capped).
+export function toMermaid(
+  graph: GraphEdges,
+  scope?: string,
+  opts: { root?: string; depth?: number; maxEdges?: number } = {}
+): string {
+  const maxEdges = opts.maxEdges ?? 120;
   const lines = ["graph LR"];
-  let n = 0;
-  const id = (p: string) => "n" + Buffer.from(p).toString("hex").slice(0, 10);
-  const label = (p: string) => p.replace(/"/g, "'");
-  const seen = new Set<string>();
-  for (const [file, deps] of Object.entries(graph.imports)) {
-    if (scope && !file.startsWith(scope)) continue;
-    for (const dep of deps) {
-      if (scope && !dep.startsWith(scope)) continue;
-      if (n >= maxEdges) break;
-      lines.push(`  ${id(file)}["${label(file)}"] --> ${id(dep)}["${label(dep)}"]`);
-      seen.add(file);
-      seen.add(dep);
-      n++;
+  // Stable, collision-free node ids: assign n0, n1, … per unique path. (The old
+  // hex-prefix scheme collided for paths sharing a prefix like "backend/src/…".)
+  const ids = new Map<string, string>();
+  const id = (p: string) => {
+    let v = ids.get(p);
+    if (!v) {
+      v = "n" + ids.size;
+      ids.set(p, v);
     }
-    if (n >= maxEdges) break;
+    return v;
+  };
+  const label = (p: string) => p.replace(/"/g, "'");
+  const edges: [string, string][] = [];
+
+  if (opts.root) {
+    // BFS from root following import edges up to `depth` hops.
+    const depth = opts.depth ?? 2;
+    const seen = new Set<string>([opts.root]);
+    let frontier = [opts.root];
+    for (let d = 0; d < depth && edges.length < maxEdges; d++) {
+      const next: string[] = [];
+      for (const file of frontier) {
+        for (const dep of graph.imports[file] ?? []) {
+          if (edges.length >= maxEdges) break;
+          edges.push([file, dep]);
+          if (!seen.has(dep)) {
+            seen.add(dep);
+            next.push(dep);
+          }
+        }
+      }
+      frontier = next;
+    }
+  } else {
+    for (const [file, deps] of Object.entries(graph.imports)) {
+      if (scope && !file.startsWith(scope)) continue;
+      for (const dep of deps) {
+        if (scope && !dep.startsWith(scope)) continue;
+        if (edges.length >= maxEdges) break;
+        edges.push([file, dep]);
+      }
+      if (edges.length >= maxEdges) break;
+    }
   }
-  if (n === 0) return "graph LR\n  empty[No internal edges in scope]";
+
+  if (edges.length === 0) return "graph LR\n  empty[No internal edges in scope]";
+  for (const [a, b] of edges) lines.push(`  ${id(a)}["${label(a)}"] --> ${id(b)}["${label(b)}"]`);
   return lines.join("\n");
 }

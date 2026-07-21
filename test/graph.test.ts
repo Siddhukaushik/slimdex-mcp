@@ -52,9 +52,40 @@ describe("toMermaid", () => {
     expect(m).not.toContain("react");
   });
 
+  it("gives prefix-sharing paths distinct node ids", () => {
+    // regression: both files share the "backend/src/" prefix and previously
+    // collided onto the same hashed node id
+    const m = toMermaid(g);
+    const edge = m.split("\n").find((l) => l.includes("src/app.ts"))!;
+    const idsOnLine = edge.match(/n\d+/g)!;
+    expect(idsOnLine[0]).not.toBe(idsOnLine[1]); // source id !== target id
+  });
+
   it("scoping filters both endpoints", () => {
     const m = toMermaid(g, "pkg/");
     // app.ts edges are outside the scope; pkg/main.py -> helpers.py crosses out of scope
     expect(m).toContain("No internal edges in scope");
+  });
+
+  it("root BFS includes only edges reachable within depth", () => {
+    const chain: CodeIndex = {
+      version: 1,
+      builtAt: "",
+      files: {
+        "a.ts": entry(["./b"]),
+        "b.ts": entry(["./c"]),
+        "c.ts": entry(["./d"]),
+        "d.ts": entry([]),
+      },
+    };
+    const gg = buildGraph(chain);
+    const d1 = toMermaid(gg, undefined, { root: "a.ts", depth: 1 });
+    expect(d1).toContain('a.ts"');
+    expect(d1).toContain('b.ts"');
+    expect(d1).not.toContain('c.ts"'); // depth 1 stops after a -> b
+
+    const d2 = toMermaid(gg, undefined, { root: "a.ts", depth: 2 });
+    expect(d2).toContain('c.ts"'); // depth 2 reaches c
+    expect(d2).not.toContain('d.ts"');
   });
 });

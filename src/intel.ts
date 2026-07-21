@@ -223,28 +223,34 @@ export async function buildContext(
   if (include.has("callers")) {
     // Textual references, attributed to their enclosing symbol (HEURISTIC — a
     // whole-word text match, not scope-resolved), excluding the def sites.
+    // Files are read in parallel batches rather than one-at-a-time: on large
+    // repos the serial version was the dominant cost of this whole call.
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const re = new RegExp(`\\b${escaped}\\b`);
-    const callers: string[] = [];
-    let totalSeen = 0;
     const defSet = new Set(defs.map((d) => `${d.file}:${d.line}`));
-    for (const [file, entry] of Object.entries(index.files)) {
-      const fsrc = file === primary.file ? src : await fs.readFile(path.join(root, file), "utf8").catch(() => "");
-      if (!fsrc) continue;
-      const flines = fsrc.split(/\r?\n/);
-      for (let i = 0; i < flines.length; i++) {
-        if (defSet.has(`${file}:${i + 1}`)) continue;
-        if (re.test(flines[i])) {
-          totalSeen++;
-          if (callers.length < callerLimit) {
-            const enc = enclosingSymbol(entry, i + 1);
-            callers.push(`  ${file}:${i + 1}${enc ? `  in ${enc.kind} ${enc.name}` : ""}`);
-          }
+    const files = Object.keys(index.files);
+
+    const hits: { file: string; line: number; enc: ReturnType<typeof enclosingSymbol> }[] = [];
+    const BATCH = 24;
+    for (let b = 0; b < files.length; b += BATCH) {
+      const slice = files.slice(b, b + BATCH);
+      const sources = await Promise.all(
+        slice.map((f) => (f === primary.file ? Promise.resolve(src) : fs.readFile(path.join(root, f), "utf8").catch(() => "")))
+      );
+      slice.forEach((file, k) => {
+        const fsrc = sources[k];
+        if (!fsrc) return;
+        const entry = index.files[file];
+        const re = new RegExp(`\\b${escaped}\\b`); // fresh per file: no lastIndex carry
+        const flines = fsrc.split(/\r?\n/);
+        for (let i = 0; i < flines.length; i++) {
+          if (defSet.has(`${file}:${i + 1}`)) continue;
+          if (re.test(flines[i])) hits.push({ file, line: i + 1, enc: enclosingSymbol(entry, i + 1) });
         }
-      }
+      });
     }
-    out.push(`## Callers / references — heuristic (showing ${callers.length} of ${totalSeen})`);
-    out.push(callers.length ? callers.join("\n") : "  (none found)");
+    const shown = hits.slice(0, callerLimit).map((h) => `  ${h.file}:${h.line}${h.enc ? `  in ${h.enc.kind} ${h.enc.name}` : ""}`);
+    out.push(`## Callers / references — heuristic (showing ${shown.length} of ${hits.length})`);
+    out.push(shown.length ? shown.join("\n") : "  (none found)");
     out.push("");
   }
 
