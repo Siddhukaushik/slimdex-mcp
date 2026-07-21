@@ -60,16 +60,33 @@ Merged on top of the built-in ignore list (`node_modules`, `dist`, `.venv`, …)
 `index_repo` echoes what it loaded and warns about unknown keys, wrong types, or
 invalid JSON, so a typo'd config isn't silently indistinguishable from none.
 
-### How the token saving is supposed to work
+### How the token saving works
 
-There's no compression trick. The intended saving is behavioral: these tools let
-an agent retrieve outlines, ranges, and locations instead of whole files, and the
+There's no compression trick. The saving is behavioral: these tools let an agent
+retrieve outlines, ranges, and locations instead of whole files, and the
 persistent index means repeat lookups hit a cached query rather than a re-read.
 
-**This has not been benchmarked.** No measured token-reduction figure is claimed
-here, because none has been produced. Whether it saves tokens on your workload
-depends on whether your agent actually uses the narrow tools instead of falling
-back to reading files, which varies by client and model.
+**Measured once, on one repository** (2026-07-21, against a ~50-file JS project):
+
+| Scope | Without | With | Delta |
+|---|---|---|---|
+| Skeleton vs. full read of a 405-line file | ~5,400 tok | ~160 tok | ~33× |
+| One real task ("how are charts populated?") | ~7,000 tok | ~860 tok | ~8× |
+| Whole session, same task both ways (`/status`) | $0.27 | $0.21 | ~29% cheaper |
+
+The per-file number is large and the per-session number is small **because they
+measure different scopes**. A session's cost is mostly fixed overhead — system
+prompt, tool definitions, project files — that CodeGlance doesn't touch. It only
+shaves the file-reading slice, so the whole-session saving is diluted. The ~29%
+is the figure that reaches the bill.
+
+**Treat these as one data point, not a benchmark.** Single repo, single task, one
+A/B run each, self-measured, no repetitions or variance. Your mileage depends
+heavily on whether your agent actually reaches for the narrow tools instead of
+falling back to reading files — which varies by client and model. The method is
+repeatable if you want to check it: run the same task in two fresh sessions, one
+instructed to use only CodeGlance and one instructed to avoid it, and compare
+`/status` cache-write.
 
 ---
 
