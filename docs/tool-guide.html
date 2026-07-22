@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CodeGlance — tool guide</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #6b7280;
+    --card: #f8f9fa; --border: #e5e7eb;
+    --accent: #2563eb; --accent-soft: #eff6ff;
+    --code-bg: #f3f4f6; --output-bg: #0f172a; --output-fg: #cbd5e1;
+    --plain-bg: #fefce8; --plain-border: #facc15;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --fg: #e5e7eb; --muted: #9ca3af;
+      --card: #171a21; --border: #2a2f3a;
+      --accent: #60a5fa; --accent-soft: #1e293b;
+      --code-bg: #1e2229; --output-bg: #0b0e13; --output-fg: #94a3b8;
+      --plain-bg: #1f1d10; --plain-border: #a16207;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 2.5rem 1.25rem 5rem; }
+  h1 { font-size: 2rem; margin: 0 0 .25rem; }
+  h2 {
+    font-size: 1.35rem; margin: 3rem 0 .75rem; padding-top: 1.5rem;
+    border-top: 2px solid var(--border);
+  }
+  h2 .g { color: var(--accent); font-size: .8rem; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .08em; display: block; }
+  .sub { color: var(--muted); margin: 0 0 2rem; }
+  .pitch {
+    background: var(--accent-soft); border-left: 4px solid var(--accent);
+    padding: .9rem 1.1rem; border-radius: 0 8px 8px 0; margin: 1.5rem 0;
+  }
+  .tool {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1.1rem 1.3rem; margin: 1.1rem 0;
+  }
+  .tool h3 {
+    margin: 0 0 .6rem; font-size: 1.05rem;
+    font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+    color: var(--accent);
+  }
+  .tech { margin: .4rem 0; }
+  .tech b, .plain b { font-size: .78rem; text-transform: uppercase;
+    letter-spacing: .06em; color: var(--muted); display: block; margin-bottom: .15rem; }
+  .plain {
+    background: var(--plain-bg); border-left: 3px solid var(--plain-border);
+    padding: .5rem .8rem; border-radius: 0 6px 6px 0; margin: .7rem 0;
+  }
+  pre {
+    background: var(--output-bg); color: var(--output-fg);
+    padding: .8rem 1rem; border-radius: 8px; overflow-x: auto;
+    font: 13px/1.55 ui-monospace, "Cascadia Code", Consolas, monospace;
+    margin: .7rem 0 0;
+  }
+  pre .call { color: #7dd3fc; }
+  code {
+    background: var(--code-bg); padding: .1em .35em; border-radius: 4px;
+    font: .875em ui-monospace, "Cascadia Code", Consolas, monospace;
+  }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .92rem; }
+  th, td { border: 1px solid var(--border); padding: .5rem .7rem; text-align: left; }
+  th { background: var(--card); }
+  .flow {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 1.2rem 1.4rem; margin: 1rem 0;
+  }
+  ol li { margin: .35rem 0; }
+  .groupnote { color: var(--muted); font-size: .95rem; margin: .25rem 0 1rem; }
+</style>
+</head>
+<body>
+<main>
+
+<h1>CodeGlance — tool guide</h1>
+<p class="sub">Every tool, explained twice — once technically, once in plain words —
+with examples, and how they chain into a workflow. All sample output comes from
+running the tools against this repository.</p>
+
+<div class="pitch">
+The one-sentence pitch: <strong>CodeGlance replaces "read the whole file" with
+narrow retrieval.</strong> An AI assistant normally pulls entire files into its
+context window to find one function. CodeGlance keeps a persistent index of
+every symbol and import, and serves small, targeted slices instead.
+</div>
+
+<h2><span class="g">Group 1</span>Orientation — "where am I?"</h2>
+
+<div class="tool">
+  <h3>repo_map</h3>
+  <p class="tech"><b>Technical</b>Aggregates the index by directory: file counts,
+  total lines, symbol counts. Pass <code>path</code> to drill into one directory and
+  list its largest files; <code>top</code> caps the list.</p>
+  <div class="plain"><b>Plain words</b>The table of contents of your project.
+  Before opening any book, glance at the shelf labels.</div>
+  <pre><span class="call">repo_map()</span>
+→ src        14 files   2501 lines    79 symbols
+  test       12 files   1684 lines   129 symbols
+  scripts     1 files     97 lines     2 symbols
+
+<span class="call">repo_map(path: "src", top: 3)</span>
+→ the 3 largest files inside src/, with their line counts</pre>
+</div>
+
+<div class="tool">
+  <h3>changed_files</h3>
+  <p class="tech"><b>Technical</b>Runs <code>git diff</code> (working tree vs HEAD, or
+  vs an explicit <code>base</code> ref) and maps every hunk to the enclosing
+  function/class via the index. Reports per-file +added/−deleted counts and real
+  A/D/M/R statuses — without pulling the patch text into context.</p>
+  <div class="plain"><b>Plain words</b>"What did I touch since my last save point,
+  and which functions live in those touched spots?" — a summary of your edits, not
+  the edits themselves.</div>
+  <pre><span class="call">changed_files()</span>
+→ M src/graph.ts  +75/-0
+    touches: function dependents, function toMermaid
+  ? src/terse.ts  +32/-0        (? = brand new file)
+    touches: function t, function fileHeader</pre>
+</div>
+
+<div class="tool">
+  <h3>index_repo</h3>
+  <p class="tech"><b>Technical</b>Builds or incrementally refreshes the persistent
+  index (symbols + imports) under <code>.codeglance/index.json</code>. Uses each
+  file's <strong>mtime</strong> — the filesystem's "last modified" timestamp — to
+  skip unchanged files: stored mtime equals current mtime → reuse the cached entry;
+  otherwise re-parse just that file. Honors <code>.codeglance.json</code> config.</p>
+  <div class="plain"><b>Plain words</b>Rebuilds the library's card catalog, but only
+  re-catalogs books that were edited since last time. Every file carries a hidden
+  timestamp saying when it last changed; matching timestamp = nothing to redo.
+  Re-running it is cheap — treat it like hitting "refresh".</div>
+  <pre><span class="call">index_repo()</span>
+→ Indexed 31 files
+  parsed: 7   reused(cache): 24   removed: 0
+  symbols indexed: 228</pre>
+  <p class="groupnote">Seven files had changed since the last run, so only those
+  seven were re-read. The other 24 came straight from the cache.</p>
+</div>
+
+<h2><span class="g">Group 2</span>Reading a file without reading the file</h2>
+
+<div class="tool">
+  <h3>outline_file</h3>
+  <p class="tech"><b>Technical</b>Declarations with line numbers — no bodies, no
+  signature detail. The cheapest per-file view.</p>
+  <div class="plain"><b>Plain words</b>The chapter list of one book.</div>
+  <pre><span class="call">outline_file(path: "src/store.ts")</span>
+→ interface FileEntry     :13
+  function loadIndex      :74
+  function saveMemory     :119</pre>
+</div>
+
+<div class="tool">
+  <h3>get_file_skeleton</h3>
+  <p class="tech"><b>Technical</b>Every declaration's full signature with
+  indentation preserved and bodies replaced by <code>… {line}</code>. A 2,000-line
+  file becomes a readable map at a fraction of the tokens.</p>
+  <div class="plain"><b>Plain words</b>The book with every chapter's first sentence
+  kept and the rest torn out — you see exactly what's in it and where, without
+  reading it.</div>
+  <pre><span class="call">get_file_skeleton(path: "src/store.ts")</span>
+→ export interface FileEntry … {13}
+  export async function loadIndex(root: string): Promise&lt;CodeIndex&gt; … {74}
+  export async function saveMemory(root: string, mem: MemoryStore): Promise&lt;void&gt; … {119}</pre>
+</div>
+
+<div class="tool">
+  <h3>read_lines</h3>
+  <p class="tech"><b>Technical</b>Returns lines <code>[start..end]</code> (1-indexed,
+  inclusive) of one file. The precise follow-up once an outline or skeleton told you
+  where to look.</p>
+  <div class="plain"><b>Plain words</b>"Open the book to pages 45–60 only."</div>
+  <pre><span class="call">read_lines(path: "src/store.ts", start: 49, end: 60)</span>
+→ the 12 lines of the ensureDir function, nothing else</pre>
+</div>
+
+<h2><span class="g">Group 3</span>Finding things by name</h2>
+<p class="groupnote">A "symbol" is anything with a name in code: a function, class,
+method, interface, variable. These tools answer name-shaped questions from the
+index — far cheaper and less noisy than text-searching raw files.</p>
+
+<div class="tool">
+  <h3>search_symbols</h3>
+  <p class="tech"><b>Technical</b>Fuzzy name match over the index only (no file
+  reads), ranked exact &gt; prefix &gt; substring &gt; subsequence. Filterable by
+  <code>kind</code> and <code>pathPrefix</code>.</p>
+  <div class="plain"><b>Plain words</b>"I half-remember the name — something like
+  'loadMem'?" It checks the card catalog, never the shelves.</div>
+  <pre><span class="call">search_symbols(query: "loadMem")</span>
+→ loadMemory   function   src/store.ts:108</pre>
+</div>
+
+<div class="tool">
+  <h3>find_definition</h3>
+  <p class="tech"><b>Technical</b>Exact-name lookup in the index → definition
+  site(s) as <code>path:line:col</code> plus kind. Heuristic, not a type-checker.</p>
+  <div class="plain"><b>Plain words</b>"Where is this thing <em>born</em>?" — the one
+  place it's declared.</div>
+  <pre><span class="call">find_definition(name: "ensureDir")</span>
+→ src/store.ts:49:1   function</pre>
+</div>
+
+<div class="tool">
+  <h3>find_references</h3>
+  <p class="tech"><b>Technical</b>Whole-word textual scan for a name across indexed
+  files, each hit attributed to its enclosing function/class. Not scope-aware — a
+  same-named identifier in an unrelated file matches too. Scope with
+  <code>pathPrefix</code>.</p>
+  <div class="plain"><b>Plain words</b>"Where is this thing <em>used</em>?" — every
+  place that mentions it.</div>
+  <pre><span class="call">find_references(name: "ensureDir", pathPrefix: "src")</span>
+→ src/store.ts:69:8    (inside loadIndex)
+  src/store.ts:114:9   (inside saveMemory)</pre>
+</div>
+
+<div class="tool">
+  <h3>search_code</h3>
+  <p class="tech"><b>Technical</b>Literal or regex text search over indexed files,
+  returning <code>path:line:col</code> + the matching line. Exact total unless the
+  scan cap trips (then it says so). Paginated via <code>limit</code> +
+  <code>offset</code>/<code>cursor</code>. Vendor/build dirs pre-excluded.</p>
+  <div class="plain"><b>Plain words</b>Ctrl+F across the whole project. Use it for
+  <em>text</em> ("find this error message"), not names — the name tools above are
+  sharper.</div>
+  <pre><span class="call">search_code(pattern: "mtimeMs", pathPrefix: "src/indexer.ts")</span>
+→ src/indexer.ts:186:30   if (existing && existing.mtimeMs === stat.mtimeMs) {
+  src/indexer.ts:197:7    mtimeMs: stat.mtimeMs,</pre>
+</div>
+
+<h2><span class="g">Group 4</span>Pulling just the code you need</h2>
+
+<div class="tool">
+  <h3>get_symbol_context</h3>
+  <p class="tech"><b>Technical</b>Returns only the body of one symbol plus a few
+  context lines (<code>before</code>/<code>after</code>, capped by
+  <code>maxLines</code>). Resolve by <code>name</code> via the index, or by explicit
+  <code>path</code>+<code>line</code>. The single biggest per-lookup token saver.</p>
+  <div class="plain"><b>Plain words</b>"Show me just that one function" — a
+  paragraph, not the book.</div>
+  <pre><span class="call">get_symbol_context(name: "ensureDir")</span>
+→ async function ensureDir(root: string): Promise&lt;void&gt; {
+    await fs.mkdir(dir(root), { recursive: true });
+    ...12 lines total...
+  }</pre>
+</div>
+
+<div class="tool">
+  <h3>get_context</h3>
+  <p class="tech"><b>Technical</b>One call assembling what would otherwise take
+  four: definition site, signature, callers (attributed to their enclosing symbol),
+  imports — with <code>body</code> and <code>dependents</code> opt-in via
+  <code>include</code>. Bounded by <code>callerLimit</code> and <code>maxChars</code>
+  with explicit truncation notices.</p>
+  <div class="plain"><b>Plain words</b>The full dossier on one thing: where it
+  lives, what it looks like, who calls it, what it pulls in — one question instead
+  of four.</div>
+  <pre><span class="call">get_context(name: "saveMemory", include: ["definition", "callers"])</span>
+→ definition: src/store.ts:119
+  signature:  export async function saveMemory(root, mem): Promise&lt;void&gt;
+  callers:    memory_save handler (src/index.ts), memory_delete handler (src/index.ts)</pre>
+</div>
+
+<h2><span class="g">Group 5</span>How files connect</h2>
+
+<div class="tool">
+  <h3>dep_graph</h3>
+  <p class="tech"><b>Technical</b>Queries the internal import graph.
+  <code>mode:"imports"</code> — what a file imports. <code>mode:"dependents"</code> —
+  the reverse: what imports it. <code>mode:"mermaid"</code> — a Mermaid diagram,
+  walked BFS outward from <code>root</code> by <code>depth</code> hops, or scoped to
+  a path prefix.</p>
+  <div class="plain"><b>Plain words</b>Files borrow from each other. Before changing
+  a shared recipe, ask "who's cooking from this?" — that list is your blast
+  radius.</div>
+  <pre><span class="call">dep_graph(mode: "dependents", target: "src/store.ts")</span>
+→ src/index.ts, src/indexer.ts, src/intel.ts
+
+<span class="call">dep_graph(mode: "mermaid", root: "src/store.ts", depth: 1)</span>
+→ graph TD
+    index.ts --&gt; store.ts
+    indexer.ts --&gt; store.ts</pre>
+</div>
+
+<h2><span class="g">Group 6</span>Memory that survives between chats</h2>
+<p class="groupnote">An AI session normally starts blank: everything figured out
+last time is gone. CodeGlance keeps a small notebook at
+<code>.codeglance/memory.json</code> — saved on your disk, next to your code,
+surviving restarts. A new session reads the notebook first and starts already
+informed. Rule of thumb: save <strong>decisions, gotchas, and "why"s</strong> —
+things the code itself cannot tell you.</p>
+
+<div class="tool">
+  <h3>memory_save</h3>
+  <p class="tech"><b>Technical</b>Appends a fact <code>{id, text, tags[],
+  created}</code> to <code>memory.json</code>.</p>
+  <div class="plain"><b>Plain words</b>Write a sticky note in the shared notebook.</div>
+  <pre><span class="call">memory_save(text: "INDEX_VERSION was bumped 1→2 because the old parser
+  captured prose inside template literals as fake declarations",
+  tags: ["indexer", "gotcha"])</span>
+→ saved [1a517171]</pre>
+</div>
+
+<div class="tool">
+  <h3>memory_list</h3>
+  <p class="tech"><b>Technical</b>Facts newest-first, <code>limit</code> default 50.</p>
+  <div class="plain"><b>Plain words</b>Flip through the notebook. <strong>First call
+  of every new session.</strong></div>
+  <pre><span class="call">memory_list()</span>
+→ [1a517171] (indexer, gotcha) 2026-07-21
+  "INDEX_VERSION was bumped 1→2 because ..."</pre>
+</div>
+
+<div class="tool">
+  <h3>memory_search</h3>
+  <p class="tech"><b>Technical</b>Filter by substring and/or tag — for when the
+  store outgrows a straight listing.</p>
+  <pre><span class="call">memory_search(tag: "gotcha")</span>
+→ only the facts tagged gotcha</pre>
+</div>
+
+<div class="tool">
+  <h3>memory_delete</h3>
+  <p class="tech"><b>Technical</b>Remove one fact by the id shown in list/search
+  output.</p>
+  <pre><span class="call">memory_delete(id: "1a517171")</span>
+→ deleted</pre>
+</div>
+
+<h2><span class="g">Group 7</span>Plumbing</h2>
+
+<div class="tool">
+  <h3>batch</h3>
+  <p class="tech"><b>Technical</b>Executes up to 20 independent CodeGlance calls in
+  one request, eliminating per-call protocol overhead. Cannot nest.</p>
+  <div class="plain"><b>Plain words</b>Ask five questions in one breath instead of
+  five phone calls.</div>
+  <pre><span class="call">batch(calls: [
+  { tool: "find_definition", args: { name: "loadIndex" } },
+  { tool: "find_definition", args: { name: "saveIndex" } }
+])</span>
+→ both answers in one round trip</pre>
+</div>
+
+<div class="tool">
+  <h3>stats</h3>
+  <p class="tech"><b>Technical</b>Per-tool call counts and response sizes
+  (characters, not tokens — char/4 estimates are unreliable across tokenizers)
+  recorded to <code>.codeglance/stats.json</code>. <code>reset:true</code> clears the
+  counters.</p>
+  <div class="plain"><b>Plain words</b>The receipt. Which tool is actually filling
+  up the context window?</div>
+  <pre><span class="call">stats()</span>
+→ batch        6 calls   17468 chars   avg 2911
+  read_lines   3 calls   10070 chars   avg 3357
+  TOTAL       19 calls   30638 chars</pre>
+</div>
+
+<h2><span class="g">Workflow</span>How they all flow together</h2>
+
+<div class="flow">
+<p>You start with <code>repo_map</code> to see the folder structure and get
+oriented. Then you narrow down with <code>search_symbols</code> or
+<code>search_code</code> to find what you're looking for across the codebase. Once
+you've found it, <code>find_definition</code> takes you to where it's declared, and
+<code>get_file_skeleton</code> or <code>outline_file</code> shows you the file's
+structure without reading everything. Then <code>get_context</code>,
+<code>get_symbol_context</code>, or <code>read_lines</code> pulls the actual code
+you need to read. If you need to see everywhere something is used,
+<code>find_references</code> shows all those places. <code>dep_graph</code> helps
+you understand how files connect and depend on each other. And throughout all this,
+<code>memory_save</code> and <code>memory_search</code> let you document what
+you've learned so it persists into the next session. <code>stats</code> tracks
+which tools are consuming your tokens so you stay efficient.</p>
+<p>Everything works together to keep you reading only what's necessary — never
+dumping whole files into context — so token usage stays proportional to the
+question, not to the size of the repository.</p>
+</div>
+
+<p><strong>A worked example.</strong> "Why does saving memory sometimes create a
+<code>.gitignore</code> file?"</p>
+<ol>
+  <li><code>memory_list</code> — has a past session already answered this? (Say no.)</li>
+  <li><code>search_symbols(query: "saveMemory")</code> → <code>src/store.ts:119</code>.</li>
+  <li><code>get_file_skeleton(path: "src/store.ts")</code> → 11 declarations;
+      <code>ensureDir</code> at line 49 looks relevant.</li>
+  <li><code>get_symbol_context(name: "ensureDir")</code> → there it is: the function
+      writes a self-ignoring <code>*</code> gitignore into <code>.codeglance/</code>,
+      flag <code>wx</code> so it never overwrites a user's edit.</li>
+  <li><code>memory_save(...)</code> — record the finding for the next session.</li>
+</ol>
+<p>Total context spent: five small answers. Without CodeGlance: reading
+<code>store.ts</code>, probably <code>index.ts</code>, maybe
+<code>indexer.ts</code> — whole.</p>
+
+<h2><span class="g">Persistence</span>The on-disk story, end to end</h2>
+
+<p>Everything durable lives in one folder at the repo root:
+<code>.codeglance/</code></p>
+
+<table>
+  <tr><th>File</th><th>What it holds</th><th>Invalidation</th></tr>
+  <tr><td><code>index.json</code></td><td>every symbol + import per file</td><td>per-file, by mtime</td></tr>
+  <tr><td><code>memory.json</code></td><td>the saved facts</td><td>never — only explicit <code>memory_delete</code></td></tr>
+  <tr><td><code>stats.json</code></td><td>usage counters</td><td>only explicit <code>stats(reset:true)</code></td></tr>
+  <tr><td><code>.gitignore</code></td><td>a single <code>*</code></td><td>written once, never overwritten</td></tr>
+</table>
+
+<p><strong>How mtime invalidation works, precisely.</strong> The filesystem stamps
+every file with the moment it was last modified (<code>mtimeMs</code>). The index
+stores that stamp alongside each file's parsed symbols. On the next
+<code>index_repo</code>, each file is <code>stat</code>-ed (cheap — no read) and
+compared: stamp unchanged → reuse the cached entry; stamp changed → someone edited
+the file, so re-parse just that one. The cost of a refresh is therefore
+proportional to <em>what changed</em>, not to repo size. The same trick is used one
+level up: the whole parsed index is held in process memory keyed on
+<code>index.json</code>'s own mtime, so even the ~20&nbsp;ms of re-reading a
+multi-megabyte index on every call is skipped.</p>
+
+<p>One thing mtime <em>cannot</em> catch: a change to the parser itself. If symbol
+extraction improves, every cached entry is stale even though no file changed.
+That's what <code>INDEX_VERSION</code> is for — bumping it discards the whole index
+regardless of timestamps.</p>
+
+</main>
+</body>
+</html>
