@@ -70,13 +70,29 @@ There's no compression trick. The saving is behavioral: these tools let an agent
 retrieve outlines, ranges, and locations instead of whole files, and the
 persistent index means repeat lookups hit a cached query rather than a re-read.
 
-**Measured once, on one repository** (2026-07-21, against a ~50-file JS project):
+Two later sessions, run by different models on different repo shapes, added
+real-world numbers to the original report:
 
-| Scope | Without | With | Delta |
-|---|---|---|---|
-| Skeleton vs. full read of a 405-line file | ~5,400 tok | ~160 tok | ~33× |
-| One real task ("how are charts populated?") | ~7,000 tok | ~860 tok | ~8× |
-| Whole session, same task both ways (`/status`) | $0.27 | $0.21 | ~29% cheaper |
+**Multi-file web app, bug-fix session (GPT-5.3-Codex).**
+19 credits reported with slimdex; the model's own estimate for the same scope
+without it: 45–70 credits. Math: 19/45 → 19/70 ≈ **58–73% cheaper**. The
+counterfactual is the model's estimate, not a measured A/B — directional.
+
+**Single giant file (folio-app: one 6,200-line, 313 KB `app.js`).**
+Slimdex's own stats: ~34,000 chars across 8 calls ≈ 9–10k tokens — one
+skeleton (213 signatures), then bodies of only ~12 relevant functions, 9 of
+them fetched in a single `get_symbol_context names:[...]` call. The naive
+path: 313 KB ≈ 78–85k tokens across 3–4 forced full reads. Math: ~10k vs
+~80k ≈ **~70k tokens saved, an 85–90% reduction** on exploration. The bug's
+diagnosis (an export path with no matching import path) was visible from the
+skeleton's signatures before a single body was opened.
+
+Together they sketch the scaling law: **the saving scales with how much
+irrelevant code the naive path would drag in.** One giant file is the best
+case; a normal repo lands around half to two-thirds cheaper; a repo of tiny
+files breaks even. Same standing caveats as everything here: stats count
+chars, not tokens (÷3.5–4), and single sessions are evidence, not benchmarks.
+
 
 The per-file number is large and the per-session number is small **because they
 measure different scopes**. A session's cost is mostly fixed overhead — system
