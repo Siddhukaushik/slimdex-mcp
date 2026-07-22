@@ -156,10 +156,11 @@ your machine. This one you can check yourself:
 
 In [`docs/`](docs/):
 
-- [`tool-reference.html`](docs/tool-reference.html) — every tool with real
-  captured output, the architecture, and the measured comparison
-- [`explained-simply.html`](docs/explained-simply.html) — the same in plain
-  language, with three end-to-end walkthroughs
+- [`tool-guide.md`](docs/tool-guide.md) — every tool explained twice
+  (technically and in plain words) with an example each, the combined
+  workflow, and how mtime-based persistence works
+- [`tool-guide.html`](docs/tool-guide.html) — the same guide as a styled,
+  self-contained page for the browser
 - [`token-savings-report.md`](docs/token-savings-report.md) — the original A/B
   measurement, its method, and how to repeat it
 
