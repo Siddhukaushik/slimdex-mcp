@@ -95,9 +95,21 @@ export function formatStats(s: StatsFile): string {
         (t.errors ? `  (${t.errors} err)` : "")
     )
     .join("\n");
+  // Follow-through: a skeleton is an *investment* that only pays off if the
+  // bodies it located are then read narrowly. Skeletons followed by whole-file
+  // reads (which happen client-side, invisible to us) show up here as a low
+  // ratio — the one number that says whether the retrieval discipline held.
+  const skeletons = s.tools["get_file_skeleton"]?.calls ?? 0;
+  const narrow = (s.tools["get_symbol_context"]?.calls ?? 0) + (s.tools["read_lines"]?.calls ?? 0);
+  const followThrough =
+    skeletons > 0
+      ? `\nfollow-through: ${skeletons} skeleton(s) → ${narrow} narrow read(s) (get_symbol_context + read_lines).` +
+        (narrow < skeletons ? ` Low — bodies were likely read as whole files outside slimdex; that forfeits the saving.` : ``)
+      : ``;
   return (
     `slimdex usage since ${s.since}\n${body}\n` +
     `  ${"TOTAL".padEnd(20)} ${String(totalCalls).padStart(5)} calls  ${String(total).padStart(9)} chars\n` +
-    `(chars, not tokens — see stats.ts for why)`
+    `(chars, not tokens — see stats.ts for why)` +
+    followThrough
   );
 }

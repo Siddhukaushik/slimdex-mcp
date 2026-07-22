@@ -143,6 +143,19 @@ describe.skipIf(!built)("MCP server end to end", () => {
     expect(out).not.toContain("unused");
   });
 
+  it("get_symbol_context pulls several bodies in one call via names", async () => {
+    const out = await call("get_symbol_context", { names: ["add", "helper"] });
+    expect(out).toContain("return a + b;"); // add's body (src/math.ts)
+    expect(out).toContain("return x * 2"); // helper's body (lib/util.py)
+    expect(out).not.toContain("unused"); // neighbours still excluded
+  });
+
+  it("get_symbol_context names batch reports a miss inline without failing the rest", async () => {
+    const out = await call("get_symbol_context", { names: ["add", "no_such_symbol"] });
+    expect(out).toContain("return a + b;");
+    expect(out).toContain('No definition indexed for "no_such_symbol"');
+  });
+
   it("dep_graph resolves an internal import", async () => {
     const out = await call("dep_graph", { mode: "imports", target: "src/app.ts" });
     expect(out).toContain("math");
@@ -197,6 +210,19 @@ describe.skipIf(!built)("MCP server end to end", () => {
   it("stats counts the calls it has served", async () => {
     const out = await call("stats");
     expect(out).toMatch(/index_repo|TOTAL/);
+  });
+
+  it("recap reconstructs prior activity with no memory_save involved", async () => {
+    await call("find_references", { name: "add" }); // leaves a breadcrumb automatically
+    const out = await call("recap");
+    expect(out).toContain("add");
+    expect(out).toMatch(/files examined|symbols looked up/);
+  });
+
+  it("stats reports skeleton follow-through once skeletons were called", async () => {
+    await call("get_file_skeleton", { path: "src/math.ts" });
+    const out = await call("stats");
+    expect(out).toMatch(/follow-through: \d+ skeleton/);
   });
 
   // ---- error handling ----

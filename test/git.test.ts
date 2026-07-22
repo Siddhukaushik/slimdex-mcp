@@ -119,6 +119,18 @@ describe.skipIf(!hasGit)("changed_files against a real git repo", () => {
     expect(formatChanged([], "HEAD", 10)).toBe("No changes vs HEAD.");
   });
 
+  it("snapshots the dirty set changed_files reports", async () => {
+    const { takeSnapshot } = await import("../src/snapshot.js");
+    const { index } = await buildOrRefresh(root);
+    const dirty = await changedFiles(root, index);
+    expect(dirty.length).toBeGreaterThan(0);
+    const snap = await takeSnapshot(root, dirty.map((f) => f.file));
+    expect(snap.files).toBeGreaterThan(0);
+    // The edited working-tree content is what got copied, not HEAD's version.
+    const copied = await fs.readFile(path.join(root, snap.dir, "src", "extra.ts"), "utf8");
+    expect(copied).toContain("gamma");
+  });
+
   it("reports A and R statuses, not a blanket M", async () => {
     // Commit an add and a rename, then diff against the first commit so both
     // show at once. (-f: app.ts carries the working-tree edit from above.)

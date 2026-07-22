@@ -26,6 +26,8 @@ import { changedFiles, formatChanged, isGitRepo } from "./git.js";
 import { loadStats, formatStats, record, resetStats } from "./stats.js";
 import { loadIndex, loadMemory, saveMemory, type MemoryFact } from "./store.js";
 import { readFileCached } from "./fscache.js";
+import { journalRecord, formatRecap } from "./journal.js";
+import { takeSnapshot, newestSnapshotAgeMs } from "./snapshot.js";
 import { TERSE, t, fileHeader, countNotice, truncNotice } from "./terse.js";
 
 const ROOT = path.resolve(process.env.SLIMDEX_ROOT || process.argv[2] || process.cwd());
@@ -50,8 +52,10 @@ const INSTRUCTIONS = `slimdex replaces "read the whole file" with narrow retriev
 1. Start with repo_map, not a file open. On a big repo, orient at the directory level before drilling in.
 2. Run index_repo liberally — it only reparses files whose mtime changed, so treat it like \`git fetch\`,
    not a one-time setup step. Re-run it before trusting a search if anything else may have touched the repo.
-3. get_file_skeleton before any full read of a file over ~300 lines, then read_lines only the 2-3
-   functions you actually need.
+3. get_file_skeleton before any full read of a file over ~300 lines — then FOLLOW THROUGH: pull the
+   bodies you need with get_symbol_context (names:[...] takes several in one call) or read_lines.
+   Falling back to a whole-file read after a skeleton throws the saving away at the exact moment it
+   was about to pay; the skeleton told you where everything is, so read only that.
 4. For anything symbol-shaped use find_definition / find_references / get_symbol_context, not search_code.
    Plain text search on a large codebase returns same-named identifiers from unrelated files.
    Reserve search_code for real string/text searches.
@@ -64,12 +68,18 @@ const INSTRUCTIONS = `slimdex replaces "read the whole file" with narrow retriev
 
 MEMORY — this is what makes a new chat start informed instead of blank:
 
-10. FIRST action in a new session, before exploring: memory_list (or memory_search on the topic).
-    Facts saved in earlier chats live in <root>/.slimdex/memory.json and survive restarts.
-    Reading them is one cheap call and routinely saves re-deriving what a past session already worked out.
+10. FIRST action in a new session, before exploring: memory_list AND recap, in one batch call.
+    memory_list returns what earlier chats chose to save; recap is reconstructed automatically from
+    the server's tool-call journal, so it works even when the previous session saved nothing — it
+    shows which files and symbols past sessions were digging into. Two cheap calls that routinely
+    save re-deriving what a past session already worked out.
 11. memory_save anything durable the moment you learn it — an architectural decision and WHY, a
     non-obvious constraint, a gotcha that cost you time, where a surprising thing lives, a convention
     the code implies but never states. Tag it so memory_search finds it later.
+    Work-in-progress COUNTS: confirmed bugs, findings, half-done fixes, agreed next steps. Save each
+    one when it is confirmed, not "at the end" — sessions never announce their end; the user simply
+    opens a new chat, and anything unsaved is gone. A findings list that dies with the tab was the
+    single most expensive loss observed in real use.
 12. Do NOT save what the code already says. A symbol's location is what the index is for; re-run
     index_repo instead. Memory is for the things reading the code cannot tell you.
 13. Correct rather than duplicate: memory_search before saving, and memory_delete facts that turn out
@@ -97,6 +107,7 @@ function tool(name: string, meta: { title: string; description: string; inputSch
       failed = true;
     }
     void record(ROOT, name, out.length, failed);
+    void journalRecord(ROOT, name, args); // automatic continuity breadcrumb; never throws
     return text(out);
   });
 }
@@ -117,14 +128,55 @@ tool(
     const r = await buildOrRefresh(ROOT, force ?? false);
     const symbols = Object.values(r.index.files).reduce((n, f) => n + f.symbols.length, 0);
     const warn = r.warnings.length ? `\n  config warnings:\n${r.warnings.map((w) => "    ! " + w).join("\n")}` : "";
+
+    // Automatic safety snapshot, riding on the call agents already make
+    // constantly. At most hourly, only when the tree is dirty, best-effort:
+    // uncommitted edits are the only state here with zero copies, and this
+    // gives them one without anyone having to remember anything.
+    let snapNote = "";
+    try {
+      const age = await newestSnapshotAgeMs(ROOT);
+      if ((age === null || age > 60 * 60 * 1000) && (await isGitRepo(ROOT))) {
+        const dirty = await changedFiles(ROOT, r.index);
+        if (dirty.length) {
+          const snap = await takeSnapshot(ROOT, dirty.map((f) => f.file));
+          snapNote = `\n  safety snapshot: ${snap.files} uncommitted file(s) → ${snap.dir} (auto, hourly; a pushed commit is still the real protection)`;
+        }
+      }
+    } catch {
+      /* never let a snapshot problem break indexing */
+    }
+
     return (
       `Indexed ${r.totalFiles} files under ${ROOT}\n` +
       `  parsed: ${r.parsed}  reused(cache): ${r.reused}  removed: ${r.removed}` +
       (r.skipped ? `  skipped(too large): ${r.skipped}` : "") +
       `\n  symbols indexed: ${symbols}  parser: ${r.parser}\n` +
       `  config: ${r.config}${warn}\n` +
-      `Cache: ${path.join(ROOT, ".slimdex", "index.json")}`
+      `Cache: ${path.join(ROOT, ".slimdex", "index.json")}` +
+      snapNote
     );
+  }
+);
+
+tool(
+  "snapshot",
+  {
+    title: "Snapshot uncommitted work",
+    description:
+      "Copy every uncommitted (changed or untracked) file into .slimdex/snapshots/<timestamp>/ as insurance against " +
+      "accidental resets. Also runs automatically (at most hourly) whenever index_repo sees a dirty tree. Newest 10 " +
+      "snapshots are kept. This defeats a stray `git checkout .` — it does NOT replace committing, which is the only " +
+      "protection that survives the disk.",
+    inputSchema: {},
+  },
+  async () => {
+    if (!(await isGitRepo(ROOT))) return "Not a git repository — snapshot needs git to identify uncommitted files.";
+    const index = await loadIndex(ROOT);
+    const dirty = await changedFiles(ROOT, index);
+    if (dirty.length === 0) return "Working tree clean — nothing to snapshot.";
+    const snap = await takeSnapshot(ROOT, dirty.map((f) => f.file));
+    return `Snapshot: ${snap.files} uncommitted file(s) → ${snap.dir}\n(newest 10 snapshots kept; a pushed commit is still the real protection)`;
   }
 );
 
@@ -327,51 +379,71 @@ tool(
 tool(
   "get_symbol_context",
   {
-    title: "Surgical symbol snippet",
+    title: "Surgical symbol snippet(s)",
     description:
       "Return ONLY the body of a symbol (function/class/method) plus a few context lines — not the whole file. Give a " +
-      "name (resolved via the index) or an explicit path+line. This is the biggest per-lookup token saver.",
+      "name (resolved via the index), several `names` at once, or an explicit path+line. This is the biggest " +
+      "per-lookup token saver. When a skeleton showed you WHERE the functions are, pull their bodies with " +
+      "names:[...] here — do NOT fall back to reading the whole file for a handful of bodies.",
     inputSchema: {
       name: z.string().optional().describe("Symbol name to resolve via the index."),
+      names: z
+        .array(z.string())
+        .min(1)
+        .max(10)
+        .optional()
+        .describe("Several symbol names in one call — one bounded body each. The narrow alternative to a whole-file read."),
       path: z.string().optional().describe("File path (use with line instead of name)."),
       line: z.number().int().min(1).optional().describe("Definition line (use with path)."),
       before: z.number().int().min(0).max(20).optional(),
       after: z.number().int().min(0).max(20).optional(),
-      maxLines: z.number().int().min(1).max(2000).optional().describe("Cap the returned span (default 200); tail elided with a notice."),
+      maxLines: z.number().int().min(1).max(2000).optional().describe("Cap each returned span (default 200); tail elided with a notice."),
     },
   },
-  async ({ name, path: p, line, before, after, maxLines }) => {
+  async ({ name, names, path: p, line, before, after, maxLines }) => {
     const index = await loadIndex(ROOT);
-    let file: string, defLine: number, kind = "symbol";
-    if (p && line) {
-      file = toPosix(path.relative(ROOT, safeResolve(p)));
-      defLine = line;
-    } else if (name) {
-      const found: { file: string; line: number; kind: string }[] = [];
-      for (const [f, entry] of Object.entries(index.files))
-        for (const s of entry.symbols) if (s.name === name) found.push({ file: f, line: s.line, kind: s.kind });
-      if (found.length === 0) return `No definition indexed for "${name}". Run index_repo, or pass path + line explicitly.`;
-      if (found.length > 1)
-        return (
-          `"${name}" has ${found.length} definitions — pass path + line to pick one:\n` +
-          found.map((d) => `  ${d.file}:${d.line}  ${d.kind}`).join("\n")
-        );
-      file = found[0].file;
-      defLine = found[0].line;
-      kind = found[0].kind;
-    } else {
-      return "Provide either name, or path + line.";
+
+    const one = async (sym: string | undefined, fp: string | undefined, ln: number | undefined): Promise<string> => {
+      let file: string, defLine: number, kind = "symbol";
+      if (fp && ln) {
+        file = toPosix(path.relative(ROOT, safeResolve(fp)));
+        defLine = ln;
+      } else if (sym) {
+        const found: { file: string; line: number; kind: string }[] = [];
+        for (const [f, entry] of Object.entries(index.files))
+          for (const s of entry.symbols) if (s.name === sym) found.push({ file: f, line: s.line, kind: s.kind });
+        if (found.length === 0) return `No definition indexed for "${sym}". Run index_repo, or pass path + line explicitly.`;
+        if (found.length > 1)
+          return (
+            `"${sym}" has ${found.length} definitions — pass path + line to pick one:\n` +
+            found.map((d) => `  ${d.file}:${d.line}  ${d.kind}`).join("\n")
+          );
+        file = found[0].file;
+        defLine = found[0].line;
+        kind = found[0].kind;
+      } else {
+        return "Provide either name, names, or path + line.";
+      }
+      // The next declaration in the same file bounds the trailing padding, so a
+      // "just this symbol" response can't spill into the following function.
+      const siblings = (index.files[file]?.symbols ?? [])
+        .map((sym2) => sym2.line)
+        .filter((l) => l > defLine)
+        .sort((a, b) => a - b);
+      const ctx = await getSymbolContext(
+        ROOT, file, defLine, kind, before ?? 2, after ?? 2, maxLines ?? 200, siblings[0]
+      );
+      return `${ctx.file}:${ctx.line}  ${ctx.kind}  (${ctx.loc} LOC)\n${ctx.text}`;
+    };
+
+    // Several bodies in one round-trip. A miss or an ambiguity reports inline
+    // as that symbol's section instead of failing the whole batch.
+    if (names && names.length) {
+      const parts: string[] = [];
+      for (const n of names) parts.push(await one(n, undefined, undefined));
+      return parts.join("\n\n");
     }
-    // The next declaration in the same file bounds the trailing padding, so a
-    // "just this symbol" response can't spill into the following function.
-    const siblings = (index.files[file]?.symbols ?? [])
-      .map((sym) => sym.line)
-      .filter((l) => l > defLine)
-      .sort((a, b) => a - b);
-    const ctx = await getSymbolContext(
-      ROOT, file, defLine, kind, before ?? 2, after ?? 2, maxLines ?? 200, siblings[0]
-    );
-    return `${ctx.file}:${ctx.line}  ${ctx.kind}  (${ctx.loc} LOC)\n${ctx.text}`;
+    return one(name, p, line);
   }
 );
 
@@ -601,6 +673,22 @@ tool(
 );
 
 tool(
+  "recap",
+  {
+    title: "What previous sessions did (automatic)",
+    description:
+      "Reconstructs prior activity from the server's own tool-call journal — most-examined files, most-looked-up " +
+      "symbols, recent searches. Needs NO prior memory_save: it is recorded automatically, so it works even when the " +
+      "last session saved nothing. Call it with memory_list at the START of a session: recap = where past sessions " +
+      "looked, memory = what they concluded.",
+    inputSchema: {
+      limit: z.number().int().min(1).max(400).optional().describe("How many recent journaled calls to summarize (default 200)."),
+    },
+  },
+  async ({ limit }) => formatRecap(ROOT, limit ?? 200)
+);
+
+tool(
   "memory_list",
   {
     title: "List memory",
@@ -656,6 +744,7 @@ tool(
       }
       try {
         parts.push(`### ${c.tool} ${JSON.stringify(c.args ?? {})}\n${await handlers[c.tool](c.args ?? {})}`);
+        void journalRecord(ROOT, c.tool, c.args); // sub-calls leave breadcrumbs too
       } catch (e) {
         parts.push(`### ${c.tool}\nErr: ${(e as Error).message}`);
       }

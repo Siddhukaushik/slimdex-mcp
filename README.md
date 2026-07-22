@@ -15,7 +15,7 @@ list, rather than loading a file to find one thing.
 | `outline_file` | Declarations of one file with line numbers |
 | `get_file_skeleton` | Signatures with bodies elided, nesting preserved |
 | `read_lines` | One line range |
-| `get_symbol_context` | One function/class body ±2 lines, capped by `maxLines` |
+| `get_symbol_context` | One function/class body ±2 lines, capped by `maxLines`; `names:[...]` pulls several bodies in one call |
 | `search_code` | `path:line:col` + the matching line with caret highlight; `limit`/`offset`/cursor pagination |
 | `find_definition` | Definition site(s) of a symbol as `path:line:col` |
 | `search_symbols` | Fuzzy symbol-name lookup, ranked exact→prefix→substring→subsequence |
@@ -26,6 +26,8 @@ list, rather than loading a file to find one thing.
 | `dep_graph` | `imports` / `dependents` / a Mermaid diagram (`root`+`depth` BFS) |
 | `stats` | Per-tool call counts and response sizes, in characters |
 | `batch` | Runs several calls in one request |
+| `recap` | Prior sessions' activity, reconstructed automatically from the server's tool-call journal — works even when nothing was saved |
+| `snapshot` | Copies uncommitted files into `.slimdex/snapshots/` (also auto-runs hourly via `index_repo` on a dirty tree) — insurance against accidental resets, not a substitute for committing |
 | `memory_save/search/list/delete` | Durable notes in `.slimdex/memory.json` |
 
 The retrieval guidance below also ships in the server's MCP `instructions`, so
@@ -96,7 +98,7 @@ instructed to use only Slimdex and one instructed to avoid it, and compare
 
 Being explicit, since the rest of this README is easy to over-read.
 
-**Covered by the unit suite** (`npm test` runs 158 tests across 14 files):
+**Covered by the unit suite** (`npm test` runs 173 tests across 16 files):
 
 - Symbol extraction across JS/TS (incl. class and object-literal methods),
   Python, Go, Rust, Java/C#, and comment skipping — `symbols.test.ts`
