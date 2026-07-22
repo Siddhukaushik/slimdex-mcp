@@ -2,7 +2,8 @@
 
 _Last updated: 2026-07-21_
 
-codeglance is a local MCP server (lives at `C:\Users\you\Desktop\codeglance-mcp`) that
+codeglance is a local MCP server (installed from source and run from a build
+output such as `<BUILD_OUTPUT>/dist/index.js`) that
 serves compact repo context — file skeletons, code search, jump-to-definition,
 dependency graph, and a per-repo memory store — instead of dumping whole files
 into the model's context. Goal: **one repo → one brain**, shared between Claude
@@ -17,11 +18,11 @@ in each one separately — they do **not** share MCP connections.
 
 | Product | Config file | codeglance key |
 |---|---|---|
-| **Claude Code** (project) | `C:\Users\you\Desktop\finance-tracker\.mcp.json` | `codeglance` (pinned to finance-tracker) |
-| **Claude Code** (global) | `C:\Users\you\.claude.json` | `codeglance-mcp` (no root → uses `cwd()`) |
-| **Claude Desktop** (chat) | `C:\Users\you\AppData\Roaming\Claude\claude_desktop_config.json` | `codeglance` (needs a pinned root) |
+| **Claude Code** (project) | `<REPO_ROOT>/.mcp.json` | `codeglance` (pinned to that repo) |
+| **Claude Code** (global) | `%USERPROFILE%\.claude.json` | `codeglance-mcp` (no root → uses `cwd()`) |
+| **Claude Desktop** (chat) | `%APPDATA%\Claude\claude_desktop_config.json` | `codeglance` (needs a pinned root) |
 
-> `%APPDATA%` = `C:\Users\you\AppData\Roaming`
+> `%APPDATA%` is the current user's roaming app-data folder.
 
 ### Example server entry
 ```json
@@ -29,14 +30,14 @@ in each one separately — they do **not** share MCP connections.
   "mcpServers": {
     "codeglance": {
       "command": "node",
-      "args": ["C:\\Users\\you\\Desktop\\codeglance-mcp\\dist\\index.js"],
-      "env": { "CODEGLANCE_ROOT": "C:\\Users\\you\\Desktop\\finance-tracker" }
+      "args": ["<BUILD_OUTPUT>/dist/index.js"],
+      "env": { "CODEGLANCE_ROOT": "<REPO_ROOT>" }
     }
   }
 }
 ```
 
-- **`args`** = where the codeglance *program* is installed (always `Desktop\codeglance-mcp`).
+- **`args`** = where the codeglance *program* is installed.
 - **`CODEGLANCE_ROOT`** = which *codebase* codeglance analyzes AND where it stores memory
   (`<ROOT>\.codeglance\memory.json`). This is the "brain" location.
 
@@ -53,12 +54,12 @@ ROOT = CODEGLANCE_ROOT  →  argv[2]  →  process.cwd()
   back to `cwd()` = the folder you opened. codeglance auto-follows every repo →
   one repo, one brain, automatically. No manual pinning needed.
 - **Claude Desktop chat:** has no project `cwd()`, so `CODEGLANCE_ROOT` **must** be
-  pinned to one repo (currently finance-tracker). Chat can only aim at one repo
-  at a time — re-pin the Desktop config to switch projects.
+  pinned to one repo. Chat can only aim at one repo at a time — re-pin the
+  Desktop config to switch projects.
 
 **Cross-chat memory works only when chat and code point at the same ROOT.**
-For finance-tracker, both are pinned to finance-tracker → they share one
-`.codeglance\memory.json` brain.
+If both clients point at the same repo, they share one `.codeglance\memory.json`
+brain.
 
 > After editing the Desktop config, **fully quit and reopen Claude Desktop**
 > (from the system tray) for it to load the new MCP server.
@@ -74,7 +75,7 @@ For finance-tracker, both are pinned to finance-tracker → they share one
 | codeglance skeleton | ~160 |
 | **Saving** | **~33×** |
 
-### B) Real task: "how are charts populated in finance-tracker?"
+### B) Real task: "how are charts populated in a sample app?"
 | Path | Tokens pulled into context |
 |---|---|
 | Naive (read 4 files whole) | ~7,000 |
@@ -122,7 +123,7 @@ re-read every turn. codeglance directly fights this by keeping context lean.
 
 Run the **same** task in two fresh chats and compare `/status` **cache write**:
 
-- **Chat A:** `Using codeglance only, explain how charts are populated in finance-tracker. Then stop.`
-- **Chat B:** `Do not use codeglance or any MCP. Read the files directly and explain how charts are populated in finance-tracker. Then stop.`
+- **Chat A:** `Using codeglance only, explain how charts are populated in the sample app. Then stop.`
+- **Chat B:** `Do not use codeglance or any MCP. Read the files directly and explain how charts are populated in the sample app. Then stop.`
 
 Same question, same stopping point, only codeglance differs = valid apples-to-apples.

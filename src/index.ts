@@ -20,11 +20,13 @@ import { randomUUID } from "node:crypto";
 import { outline, formatOutline } from "./outline.js";
 import { buildOrRefresh, toPosix } from "./indexer.js";
 import { searchFiles, formatMatches, encodeCursor, decodeCursor } from "./search.js";
-import { buildGraph, dependents, toMermaid } from "./graph.js";
+import { buildGraph, dependents, toMermaid, nameRefEdges, mergeEdges } from "./graph.js";
 import { fileSkeleton, getSymbolContext, buildContext, enclosingSymbol } from "./intel.js";
 import { changedFiles, formatChanged, isGitRepo } from "./git.js";
 import { loadStats, formatStats, record, resetStats } from "./stats.js";
 import { loadIndex, loadMemory, saveMemory, type MemoryFact } from "./store.js";
+import { readFileCached } from "./fscache.js";
+import { TERSE, t, fileHeader, countNotice, truncNotice } from "./terse.js";
 
 const ROOT = path.resolve(process.env.CODEGLANCE_ROOT || process.argv[2] || process.cwd());
 
@@ -135,7 +137,7 @@ tool(
   },
   async ({ path: p }) => {
     const abs = safeResolve(p);
-    const src = await fs.readFile(abs, "utf8");
+    const src = await readFileCached(abs);
     return formatOutline(toPosix(path.relative(ROOT, abs)), outline(src), src.split(/\r?\n/).length);
   }
 );
@@ -149,11 +151,11 @@ tool(
   },
   async ({ path: p, start, end }) => {
     const abs = safeResolve(p);
-    const lines = (await fs.readFile(abs, "utf8")).split(/\r?\n/);
+    const lines = (await readFileCached(abs)).split(/\r?\n/);
     const s = Math.max(1, start);
     const e = Math.min(lines.length, Math.max(s, end));
     const body = lines.slice(s - 1, e).map((l, i) => `${String(s + i).padStart(5)}  ${l}`).join("\n");
-    return `${toPosix(path.relative(ROOT, abs))} [${s}-${e} of ${lines.length}]\n${body}`;
+    return `${fileHeader(toPosix(path.relative(ROOT, abs)), s, e, lines.length)}\n${body}`;
   }
 );
 
@@ -204,7 +206,7 @@ tool(
     const hasMore = total > start + matches.length;
     const next = hasMore ? `\nnext cursor: ${encodeCursor(start + lim, index.builtAt)}` : "";
     const totalStr = exact ? `${total}` : `${total}+ (scan cap reached)`;
-    return `${matches.length} of ${totalStr} match(es)${staleNote}\n${formatMatches(matches)}${next}`;
+    return `${t(`${matches.length} of ${totalStr} match(es)`, `${matches.length}/${totalStr}`)}${staleNote}\n${formatMatches(matches)}${next}`;
   }
 );
 
@@ -222,7 +224,7 @@ tool(
       for (const s of entry.symbols)
         if (s.name === name && (!kind || s.kind === kind)) hits.push(`${file}:${s.line}:${s.col}  ${s.kind} ${s.name}`);
     return hits.length
-      ? `${hits.length} definition candidate(s) for "${name}":\n${hits.join("\n")}`
+      ? `${t(`${hits.length} definition candidate(s) for "${name}":`, `${hits.length} def(s) "${name}":`)}\n${hits.join("\n")}`
       : `No definition indexed for "${name}". Try search_symbols for a fuzzy match.`;
   }
 );
@@ -275,9 +277,11 @@ tool(
     const lim = limit ?? 25;
     hits.sort((a, b) => a.rank - b.rank || a.name.length - b.name.length || a.name.localeCompare(b.name));
     const shown = hits.slice(0, lim);
-    const rows = shown.map((h) => `  ${h.file}:${h.line}:${h.col}  ${h.kind.padEnd(9)} ${h.name}`);
+    const rows = shown.map((h) =>
+      TERSE ? `  ${h.file}:${h.line}:${h.col} ${h.kind} ${h.name}` : `  ${h.file}:${h.line}:${h.col}  ${h.kind.padEnd(9)} ${h.name}`
+    );
     const more = hits.length > shown.length ? `\n  … ${hits.length - shown.length} more; raise limit or narrow with kind/pathPrefix` : "";
-    return `${shown.length} of ${hits.length} symbol(s) matching "${query}":\n${rows.join("\n")}${more}`;
+    return `${t(`${shown.length} of ${hits.length} symbol(s) matching "${query}":`, `${shown.length}/${hits.length} "${query}":`)}\n${rows.join("\n")}${more}`;
   }
 );
 
@@ -307,6 +311,7 @@ tool(
       regex: true,
       maxMatches: lim,
       offset: off,
+      literalHint: name, // skip files that can't possibly contain the symbol
     });
     // attribute each hit to its enclosing symbol
     const rows = matches.map((m) => {
@@ -315,7 +320,7 @@ tool(
     });
     const totalStr = exact ? `${total}` : `${total}+ (scan cap reached)`;
     const more = total > off + matches.length ? `\n  … raise offset to ${off + lim} for more` : "";
-    return `${matches.length} of ${totalStr} reference(s) to "${name}":\n${rows.join("\n") || "  (none)"}${more}`;
+    return `${t(`${matches.length} of ${totalStr} reference(s) to "${name}":`, `${matches.length}/${totalStr} refs "${name}":`)}\n${rows.join("\n") || "  (none)"}${more}`;
   }
 );
 
@@ -386,7 +391,7 @@ tool(
     const index = await loadIndex(ROOT);
     const entry = index.files[rel];
     if (!entry) return `${rel} is not indexed — run index_repo (or check the path).`;
-    const src = await fs.readFile(abs, "utf8");
+    const src = await readFileCached(abs);
     const skel = fileSkeleton(src, entry);
     return `${rel} skeleton (${entry.lines} lines, ${entry.symbols.length} symbols):\n${skel || "  (no declarations detected)"}`;
   }
@@ -399,8 +404,8 @@ tool(
     description:
       "Assembles in ONE call what would otherwise take several: definition, signature, callers/references (attributed " +
       "to their enclosing symbol — heuristic), imports, and dependents. Sections are OPT-IN via `include` (default: " +
-      "definition,signature,callers,imports,dependents). Add 'body' for full source. Bounded by callerLimit and " +
-      "maxChars with explicit truncation — so it stays a token-saver, not a token-hog.",
+      "definition,signature,callers,imports). Add 'body' for full source or 'dependents' for reverse deps. Bounded by " +
+      "callerLimit and maxChars with explicit truncation — so it stays a token-saver, not a token-hog.",
     inputSchema: {
       name: z.string(),
       include: z
@@ -448,7 +453,11 @@ tool(
       const shown = rows.slice(0, lim);
       const totalLines = rows.reduce((n, [, e]) => n + e.lines, 0);
       const body = shown
-        .map(([f, e]) => `  ${f.padEnd(52)} ${String(e.lines).padStart(6)} lines ${String(e.symbols.length).padStart(5)} symbols`)
+        .map(([f, e]) =>
+          TERSE
+            ? `  ${f} ${e.lines}L ${e.symbols.length}sym`
+            : `  ${f.padEnd(52)} ${String(e.lines).padStart(6)} lines ${String(e.symbols.length).padStart(5)} symbols`
+        )
         .join("\n");
       const more = rows.length > shown.length ? `\n  … ${rows.length - shown.length} more file(s); raise top` : "";
       return `${prefix}: ${rows.length} files, ${totalLines} lines (largest first)\n${body}${more}`;
@@ -467,7 +476,11 @@ tool(
     }
     const rows = [...buckets.entries()]
       .sort((a, b) => b[1].lines - a[1].lines)
-      .map(([k, v]) => `  ${k.padEnd(40)} ${String(v.files).padStart(5)} files ${String(v.lines).padStart(7)} lines ${String(v.symbols).padStart(6)} symbols`);
+      .map(([k, v]) =>
+        TERSE
+          ? `  ${k} ${v.files}f ${v.lines}L ${v.symbols}sym`
+          : `  ${k.padEnd(40)} ${String(v.files).padStart(5)} files ${String(v.lines).padStart(7)} lines ${String(v.symbols).padStart(6)} symbols`
+      );
     return `Repo map for ${ROOT} (depth ${d}):\n${rows.join("\n")}\n(drill in with repo_map path:"<dir>")`;
   }
 );
@@ -511,7 +524,9 @@ tool(
   },
   async ({ mode, target, scope, root, depth }) => {
     const index = await loadIndex(ROOT);
-    const graph = buildGraph(index);
+    // Import edges, plus name-reference edges for import-less languages (Apex)
+    // — without the second set, Salesforce repos graphed to nothing.
+    const graph = mergeEdges(buildGraph(index), await nameRefEdges(ROOT, index));
     if (mode === "mermaid")
       return (
         "```mermaid\n" +
@@ -587,10 +602,21 @@ tool(
 
 tool(
   "memory_list",
-  { title: "List all memory", description: "List every saved memory fact.", inputSchema: {} },
-  async () => {
+  {
+    title: "List memory",
+    description: "List saved memory facts, newest first (default 50). Use memory_search to filter a large store.",
+    inputSchema: { limit: z.number().int().min(1).max(1000).optional().describe("Max facts to return (default 50).") },
+  },
+  async ({ limit }) => {
     const mem = await loadMemory(ROOT);
-    return mem.facts.length ? mem.facts.map((f) => `[${f.id}] ${f.tags.length ? "(" + f.tags.join(",") + ") " : ""}${f.text}`).join("\n") : "No memory saved yet.";
+    if (!mem.facts.length) return "No memory saved yet.";
+    const lim = limit ?? 50;
+    // Newest first: recent decisions supersede old ones, so they should be the
+    // first thing a fresh session reads — and the part that survives a cap.
+    const shown = [...mem.facts].reverse().slice(0, lim);
+    const rows = shown.map((f) => `[${f.id}] ${f.tags.length ? "(" + f.tags.join(",") + ") " : ""}${f.text}`);
+    const more = mem.facts.length > lim ? `\n… ${mem.facts.length - lim} older fact(s); raise limit or memory_search.` : "";
+    return rows.join("\n") + more;
   }
 );
 

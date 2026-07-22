@@ -3,8 +3,8 @@
 // enough for an agent to jump to the exact spot without the server streaming
 // whole files back.
 
-import { promises as fs } from "node:fs";
 import path from "node:path";
+import { readFileCached } from "./fscache.js";
 
 export interface Match {
   file: string;
@@ -43,6 +43,12 @@ export async function searchFiles(
     offset?: number;
     highlight?: boolean;
     scanCap?: number;
+    // A literal substring the pattern cannot match without. Files whose raw
+    // source doesn't contain it are skipped before the line-split + per-line
+    // regex, which is where nearly all of a big scan's time goes. Non-regex
+    // searches get this automatically (the pattern IS the literal); regex
+    // callers like find_references (\bname\b) pass the name explicitly.
+    literalHint?: string;
   } = {}
 ): Promise<SearchResult> {
   const max = opts.maxMatches ?? 200;
@@ -61,14 +67,18 @@ export async function searchFiles(
     throw new Error(`Invalid pattern: ${(e as Error).message}`);
   }
 
+  const rawHint = opts.literalHint ?? (opts.regex ? undefined : pattern);
+  const hint = rawHint && rawHint.length > 0 ? (opts.ignoreCase ? rawHint.toLowerCase() : rawHint) : undefined;
+
   const out: Match[] = [];
   outer: for (const rel of files) {
     let source: string;
     try {
-      source = await fs.readFile(path.join(root, rel), "utf8");
+      source = await readFileCached(path.join(root, rel));
     } catch {
       continue;
     }
+    if (hint && !(opts.ignoreCase ? source.toLowerCase() : source).includes(hint)) continue;
     const lines = source.split(/\r?\n/);
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];

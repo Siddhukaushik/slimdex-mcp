@@ -65,6 +65,21 @@ describe("searchFiles", () => {
     expect(r.exact).toBe(true);
   });
 
+  it("literal pre-filter never drops matches (regression guard)", async () => {
+    // The candidate skip must be invisible in results: same totals with and
+    // without literalHint, across regex, ignoreCase, and CRLF files.
+    await writeFile(path.join(root, "src", "crlf.ts"), "const Beta = 1;\r\nBeta();\r\n", "utf8");
+    const files = ["src/a.ts", "src/b.ts", "src/crlf.ts"];
+
+    const plain = await searchFiles(root, files, "\\bbeta\\b", { regex: true, maxMatches: 100 });
+    const hinted = await searchFiles(root, files, "\\bbeta\\b", { regex: true, maxMatches: 100, literalHint: "beta" });
+    expect(hinted.total).toBe(plain.total);
+    expect(hinted.matches).toEqual(plain.matches);
+
+    const ci = await searchFiles(root, files, "beta", { ignoreCase: true, maxMatches: 100 });
+    expect(ci.matches.some((m) => m.file === "src/crlf.ts")).toBe(true); // case-folded hint still admits Beta
+  });
+
   it("escapes literal patterns and rejects bad regex tersely", async () => {
     const { matches } = await searchFiles(root, ["src/a.ts"], "beta()", {});
     expect(matches.length).toBeGreaterThan(0); // literal parens, not a regex group

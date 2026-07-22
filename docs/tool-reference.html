@@ -225,7 +225,7 @@
 <section>
   <div class="prose">
     <h2>One real question, measured both ways</h2>
-    <p class="sub">“Explain this LWC” — <code>achLpDashboard</code>, from the Apex Capital Hub org.</p>
+    <p class="sub">“Explain this LWC” — <code>accountDashboard</code>, from a sample Apex org.</p>
     <p>
       The component wires two Apex methods, renders an LP's financial summary,
       and computes a handful of derived totals. To explain it you need to know
@@ -285,7 +285,7 @@
 <section>
   <div class="prose">
     <h2>The nineteen tools</h2>
-    <p class="sub">Grouped by the job they do, not alphabetically. Every output below is real, captured against the Apex Capital Hub repo.</p>
+    <p class="sub">Grouped by the job they do, not alphabetically. Every output below is real, captured against a sample repository.</p>
   </div>
 
   <div class="grouphead">
@@ -297,7 +297,7 @@
     <div class="tool-head"><h4>index_repo</h4><span class="tag">run it liberally</span></div>
     <p>Builds or refreshes the symbol and import index. Only files whose mtime changed are re-parsed, so this is closer to <code>git fetch</code> than to a setup step — re-run it any time something else may have touched the repo.</p>
     <div class="callline">index_repo</div>
-<pre>Indexed 56 files under C:\Users\you\Desktop\mystart-main
+<pre>Indexed 56 files under &lt;REPO_ROOT&gt;/sample-app
   parsed: 0  reused(cache): 56  removed: 0
   symbols indexed: 344  parser: regex
   config: no .codeglance.json (defaults)</pre>
@@ -483,11 +483,16 @@ DistributionLineTriggerHandler.cls:6:24  method updateCommitmentTotals</pre>
   n2["src/indexer.ts"] --&gt; n10["src/parser.ts"]
   n5["src/intel.ts"] --&gt; n9["src/lexer.ts"]
   n8["src/store.ts"] --&gt; n11["src/symbols.ts"]</pre>
-    <div class="note warn" style="margin-top:.9rem">
-      <strong>Honest limit.</strong> On the Salesforce repo this returns
-      <em>“No internal edges in scope”</em> — Apex has no import statements, so
-      there is no file-level graph to build. It works on JS/TS, Python and Rust;
-      on Apex, <code>find_references</code> is the tool that does this job.
+    <div class="note" style="margin-top:.9rem">
+      <strong>Beyond imports.</strong> Languages without import statements used
+      to return <em>“No internal edges in scope”</em>. The graph now adds
+      <em>name-reference edges</em> — a file that mentions a top-level type
+      defined in another file (comments and strings masked out) gets an edge,
+      covering <code>implements</code>, trigger→handler, and ordinary
+      class-uses-class — and <em>declarative-wiring edges</em> from repo XML,
+      where a configuration record naming a class links to it. Only bindings
+      that exist solely in a live system, never retrieved into the repo, can't
+      be drawn.
     </div>
   </div>
 
@@ -503,7 +508,7 @@ DistributionLineTriggerHandler.cls:6:24  method updateCommitmentTotals</pre>
 <pre>No changes vs HEAD.
 
 <span class="c"># on a non-git directory it says so plainly:</span>
-C:\Users\you\Desktop\mystart-main is not a git repository
+&lt;REPO_ROOT&gt;/sample-app is not a git repository
 (or git is not installed).</pre>
   </div>
 

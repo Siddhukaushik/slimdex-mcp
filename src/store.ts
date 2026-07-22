@@ -48,6 +48,15 @@ function dir(root: string): string {
 
 async function ensureDir(root: string): Promise<void> {
   await fs.mkdir(dir(root), { recursive: true });
+  // Self-ignoring cache, the node_modules/.cache trick: a `*` gitignore inside
+  // the directory keeps it out of the repo's status without requiring the user
+  // to edit their own .gitignore. Written once; never overwrites an edit.
+  const ignore = path.join(dir(root), ".gitignore");
+  try {
+    await fs.writeFile(ignore, "*\n", { flag: "wx" });
+  } catch {
+    /* already exists */
+  }
 }
 
 // Every tool call needs the index, and re-reading + re-parsing it from disk each

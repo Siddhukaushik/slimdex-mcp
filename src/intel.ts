@@ -8,10 +8,10 @@
 // uses brace balancing for C-family and indentation for Python/Ruby. Good
 // enough to return "just this function" instead of a whole file.
 
-import { promises as fs } from "node:fs";
 import path from "node:path";
+import { readFileCached } from "./fscache.js";
 import type { CodeIndex, FileEntry } from "./store.js";
-import { buildGraph, dependents } from "./graph.js";
+import { buildGraph, dependents, nameRefEdges, mergeEdges } from "./graph.js";
 import { braceDelta, type ScanState } from "./lexer.js";
 
 function leadingWS(line: string): number {
@@ -117,7 +117,7 @@ export async function getSymbolContext(
   // symbol" — so padding stops short of the next declaration.
   nextDefLine?: number
 ): Promise<SymbolContext> {
-  const source = await fs.readFile(path.join(root, file), "utf8");
+  const source = await readFileCached(path.join(root, file));
   const lines = source.split(/\r?\n/);
   const block = extractBlock(lines, defLine);
   const ceiling = nextDefLine && nextDefLine > block.end ? nextDefLine - 1 : lines.length;
@@ -131,7 +131,11 @@ export async function getSymbolContext(
 }
 
 export type ContextSection = "definition" | "signature" | "body" | "callers" | "imports" | "dependents";
-const ALL_SECTIONS: ContextSection[] = ["definition", "signature", "callers", "imports", "dependents"];
+// `body` was already opt-in; `dependents` joined it after looking at real
+// transcripts: for a popular symbol the section is a long file list the agent
+// rarely acts on, and it forces an import-graph build on every call. Ask for
+// it (or use dep_graph) when reverse deps are actually the question.
+const DEFAULT_SECTIONS: ContextSection[] = ["definition", "signature", "callers", "imports"];
 
 // The "Intelligent Context Builder": one call that assembles what an agent
 // would otherwise gather with find_definition + read + find_references +
@@ -145,7 +149,7 @@ export async function buildContext(
   name: string,
   opts: { include?: ContextSection[]; callerLimit?: number; maxChars?: number } = {}
 ): Promise<string> {
-  const include = new Set<ContextSection>(opts.include ?? ALL_SECTIONS);
+  const include = new Set<ContextSection>(opts.include ?? DEFAULT_SECTIONS);
   const callerLimit = opts.callerLimit ?? 12;
   const maxChars = opts.maxChars ?? 12000;
 
@@ -165,7 +169,7 @@ export async function buildContext(
     out.push("");
   }
 
-  const src = await fs.readFile(path.join(root, primary.file), "utf8");
+  const src = await readFileCached(path.join(root, primary.file));
   const lines = src.split(/\r?\n/);
   const block = extractBlock(lines, primary.line);
 
@@ -193,11 +197,14 @@ export async function buildContext(
     for (let b = 0; b < files.length; b += BATCH) {
       const slice = files.slice(b, b + BATCH);
       const sources = await Promise.all(
-        slice.map((f) => (f === primary.file ? Promise.resolve(src) : fs.readFile(path.join(root, f), "utf8").catch(() => "")))
+        slice.map((f) => (f === primary.file ? Promise.resolve(src) : readFileCached(path.join(root, f)).catch(() => "")))
       );
       slice.forEach((file, k) => {
         const fsrc = sources[k];
         if (!fsrc) return;
+        // \b<name>\b can't match a file that doesn't contain the raw name:
+        // skip the line-split + per-line regex, the dominant cost at scale.
+        if (!fsrc.includes(name)) return;
         const entry = index.files[file];
         const re = new RegExp(`\\b${escaped}\\b`); // fresh per file: no lastIndex carry
         const flines = fsrc.split(/\r?\n/);
@@ -214,7 +221,7 @@ export async function buildContext(
   }
 
   if (include.has("imports") || include.has("dependents")) {
-    const graph = buildGraph(index);
+    const graph = mergeEdges(buildGraph(index), await nameRefEdges(root, index));
     if (include.has("imports")) {
       const internal = graph.imports[primary.file] ?? [];
       const external = graph.external[primary.file] ?? [];
