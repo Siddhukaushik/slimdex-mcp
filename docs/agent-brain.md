@@ -117,3 +117,38 @@ session number is smaller because fixed overhead (system prompt, tool defs)
 dominates and slimdex only shaves the file-reading slice. The discipline above
 is what decides whether you land near the 33× or near zero: the tools cannot
 save tokens that a whole-file read spends anyway.
+
+## Field results — real sessions, real numbers (2026-07-22)
+
+Two independent sessions, different models, different repo shapes. Kept here
+with their caveats so they inform expectations instead of inflating them.
+
+**Scenario 1 — bug-fix session, multi-file web app (GPT-5.3-Codex).**
+Reported burn **19 credits** with slimdex; the model's own
+counterfactual estimate for the same scope without it: **45–70 credits**
+(broader file reads + more exploratory search passes). Math: 19/45 → 19/70 ≈
+**58–73% cheaper**. Caveat: the counterfactual is the model's estimate, not a
+measured A/B — treat as directional.
+
+**Scenario 2 — one giant file (a single 6,200-line, 313 KB
+`app.js`).** Slimdex's own stats log: **~34,000 chars across 8 calls ≈ 9–10k
+tokens** — one `get_file_skeleton` (213 function signatures, ~9.5k chars),
+then bodies of only the ~12 relevant functions, with `get_symbol_context
+names:[...]` pulling 9 load/save bodies **in one call**. The naive path:
+313 KB ≈ **78–85k tokens**, and the file exceeds a 2,000-line read window, so
+cold-reading it costs 3–4 full reads. Math: ~10k vs ~80k ≈ **~70k tokens
+saved, an 85–90% reduction** on the exploration phase. Bonus beyond tokens:
+the *diagnosis itself* was visible from the skeleton alone — an export path
+existed (`htmlToDocxBlob`) with no matching import path, readable from
+signatures without opening a single body.
+
+**What these two prove together:** the saving scales with how much irrelevant
+code the naive path would drag in. One giant file → near best-case (85–90%);
+a normal multi-file repo → still roughly half to two-thirds cheaper; a repo of
+tiny files → plain reads are often just as cheap, use them. And note the
+follow-through rule working in scenario 2: skeleton → 12 targeted bodies,
+zero whole-file reads — that is what the discipline looks like when it holds.
+
+Standing caveats: stats measure **chars, not tokens** (÷3.5–4 to estimate);
+memory/recap contribute nothing on a repo's *first* run — their payoff starts
+the second session, which begins already knowing the layout.
