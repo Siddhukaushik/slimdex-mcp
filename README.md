@@ -1,8 +1,8 @@
-# codeglance-mcp
+# slimdex-mcp
 
 A local [MCP](https://modelcontextprotocol.io) server that helps coding agents
 **retrieve code narrowly** instead of reading whole files into context. An agent
-asks CodeGlance for a specific outline, line range, symbol body, or reference
+asks Slimdex for a specific outline, line range, symbol body, or reference
 list, rather than loading a file to find one thing.
 
 > **Status: pre-1.0.** It works on the repos it has been run
@@ -26,7 +26,7 @@ list, rather than loading a file to find one thing.
 | `dep_graph` | `imports` / `dependents` / a Mermaid diagram (`root`+`depth` BFS) |
 | `stats` | Per-tool call counts and response sizes, in characters |
 | `batch` | Runs several calls in one request |
-| `memory_save/search/list/delete` | Durable notes in `.codeglance/memory.json` |
+| `memory_save/search/list/delete` | Durable notes in `.slimdex/memory.json` |
 
 The retrieval guidance below also ships in the server's MCP `instructions`, so
 clients inject it into the model's context automatically.
@@ -47,7 +47,7 @@ by `maxChars` (default 12,000). Every cap that trips prints an explicit notice
 silently. `get_symbol_context` caps its span with `maxLines` the same way, and
 `memory_list` returns the newest 50 facts unless told otherwise.
 
-### Config: `<root>/.codeglance.json` (optional)
+### Config: `<root>/.slimdex.json` (optional)
 
 ```json
 {
@@ -78,7 +78,7 @@ persistent index means repeat lookups hit a cached query rather than a re-read.
 
 The per-file number is large and the per-session number is small **because they
 measure different scopes**. A session's cost is mostly fixed overhead — system
-prompt, tool definitions, project files — that CodeGlance doesn't touch. It only
+prompt, tool definitions, project files — that Slimdex doesn't touch. It only
 shaves the file-reading slice, so the whole-session saving is diluted. The ~29%
 is the figure that reaches the bill.
 
@@ -87,7 +87,7 @@ A/B run each, self-measured, no repetitions or variance. Your mileage depends
 heavily on whether your agent actually reaches for the narrow tools instead of
 falling back to reading files — which varies by client and model. The method is
 repeatable if you want to check it: run the same task in two fresh sessions, one
-instructed to use only CodeGlance and one instructed to avoid it, and compare
+instructed to use only Slimdex and one instructed to avoid it, and compare
 `/status` cache-write.
 
 ---
@@ -115,7 +115,7 @@ Being explicit, since the rest of this README is easy to over-read.
 - String/comment masking and brace-depth tracking — `lexer.test.ts`
 - Per-language extraction for all twelve supported languages — `languages.test.ts`
 - The index cache returns the same object until the index is rewritten
-- `.codeglance.json` loading: every key applied through a real index build, plus
+- `.slimdex.json` loading: every key applied through a real index build, plus
   the failure modes (invalid JSON, unknown keys, wrong types) each producing a
   visible warning instead of silence — `config.test.ts`
 - `changed_files` against a real temporary git repository: hunk→symbol
@@ -262,10 +262,10 @@ costs a `stat()` instead of a read.
 
 ## Memory across sessions
 
-`memory_save` writes to `<root>/.codeglance/memory.json`, which outlives the
+`memory_save` writes to `<root>/.slimdex/memory.json`, which outlives the
 process — a fact saved in one chat is readable in the next, by a different
 client, after a restart. Chat and editor share one store only when both point at
-the same `CODEGLANCE_ROOT`.
+the same `SLIMDEX_ROOT`.
 
 Nothing is captured automatically: the server never sees your conversation, so
 the agent has to decide what's worth keeping. The shipped `instructions` tell it
@@ -298,7 +298,7 @@ gotchas as it learns them — but that's guidance to the model, not a guarantee.
   advanced C++ shapes — templates split across lines, operator overloads.
 - For LSP-grade precision you'd swap the parser for tree-sitter or a language
   server. `src/parser.ts` is the seam: a `Parser` interface selected by
-  `CODEGLANCE_PARSER`, with the regex parser as the only implementation that
+  `SLIMDEX_PARSER`, with the regex parser as the only implementation that
   ships. A tree-sitter backend would drop in there without touching any tool or
   the index format. It is **not built** — per-language grammars trade away the
   "installs instantly, runs offline, zero config" property.
@@ -332,11 +332,11 @@ measured results:
 
 ## Install
 
-**Not published to npm.** There is no `npx codeglance-mcp`. Build from source:
+**Not published to npm.** There is no `npx slimdex-mcp`. Build from source:
 
 ```bash
-git clone https://github.com/Siddhukaushik/codeglance-mcp
-cd codeglance-mcp
+git clone https://github.com/Siddhukaushik/slimdex-mcp
+cd slimdex-mcp
 npm install
 npm run build      # produces dist/index.js
 npm test           # vitest unit suite
@@ -353,14 +353,14 @@ node smoke-test.mjs "C:/path/to/some/repo"   # any other
 
 | Var | Effect |
 |-----|--------|
-| `CODEGLANCE_ROOT` | Repo to index (or pass as the first CLI arg; defaults to cwd) |
-| `CODEGLANCE_WATCH` | Set to `1` to auto-reindex on file save (native watcher, no deps) |
-| `CODEGLANCE_PARSER` | Parser backend; only `regex` exists today |
-| `CODEGLANCE_TERSE` | Set to `1` for terser response text: shorter headers and no column padding in `search_code`, `find_definition`, `search_symbols`, `find_references`, `repo_map`, `read_lines`. Default output is byte-identical to before. |
+| `SLIMDEX_ROOT` | Repo to index (or pass as the first CLI arg; defaults to cwd) |
+| `SLIMDEX_WATCH` | Set to `1` to auto-reindex on file save (native watcher, no deps) |
+| `SLIMDEX_PARSER` | Parser backend; only `regex` exists today |
+| `SLIMDEX_TERSE` | Set to `1` for terser response text: shorter headers and no column padding in `search_code`, `find_definition`, `search_symbols`, `find_references`, `repo_map`, `read_lines`. Default output is byte-identical to before. |
 
 ## The persistent cache
 
-Per repository, CodeGlance writes to `<repo>/.codeglance/`:
+Per repository, Slimdex writes to `<repo>/.slimdex/`:
 
 - `index.json` — the code index (mtime-invalidated per file, and discarded
   wholesale when the index format version changes, so a stale index built by an
@@ -378,7 +378,7 @@ to commit the cache.
 ## Wiring it into MCP clients
 
 MCP is a shared standard, so the same server should plug into any MCP-capable
-client. The project root is passed via `CODEGLANCE_ROOT` (or as the first CLI
+client. The project root is passed via `SLIMDEX_ROOT` (or as the first CLI
 arg).
 
 **Only Claude Code and Claude Desktop have actually been run.** The others below
@@ -386,11 +386,11 @@ are the standard config shape for each client, written from their documented
 format — they are untested here and may need adjustment.
 
 Replace `<ABS_PATH>` with your build output, e.g.
-`C:\path\to\codeglance-mcp\dist\index.js`, and `<REPO>` with the repo to index.
+`C:\path\to\slimdex-mcp\dist\index.js`, and `<REPO>` with the repo to index.
 
 ### Claude Code (CLI) — tested
 ```bash
-claude mcp add codeglance --env CODEGLANCE_ROOT=<REPO> -- node <ABS_PATH>
+claude mcp add slimdex --env SLIMDEX_ROOT=<REPO> -- node <ABS_PATH>
 ```
 
 ### Claude Desktop — tested
@@ -398,10 +398,10 @@ claude mcp add codeglance --env CODEGLANCE_ROOT=<REPO> -- node <ABS_PATH>
 ```json
 {
   "mcpServers": {
-    "codeglance": {
+    "slimdex": {
       "command": "node",
       "args": ["<ABS_PATH>"],
-      "env": { "CODEGLANCE_ROOT": "<REPO>" }
+      "env": { "SLIMDEX_ROOT": "<REPO>" }
     }
   }
 }
@@ -412,10 +412,10 @@ claude mcp add codeglance --env CODEGLANCE_ROOT=<REPO> -- node <ABS_PATH>
 ```json
 {
   "mcpServers": {
-    "codeglance": {
+    "slimdex": {
       "command": "node",
       "args": ["<ABS_PATH>"],
-      "env": { "CODEGLANCE_ROOT": "${workspaceFolder}" }
+      "env": { "SLIMDEX_ROOT": "${workspaceFolder}" }
     }
   }
 }
@@ -429,10 +429,10 @@ claude mcp add codeglance --env CODEGLANCE_ROOT=<REPO> -- node <ABS_PATH>
 ```json
 {
   "servers": {
-    "codeglance": {
+    "slimdex": {
       "command": "node",
       "args": ["<ABS_PATH>"],
-      "env": { "CODEGLANCE_ROOT": "${workspaceFolder}" }
+      "env": { "SLIMDEX_ROOT": "${workspaceFolder}" }
     }
   }
 }
@@ -442,10 +442,10 @@ claude mcp add codeglance --env CODEGLANCE_ROOT=<REPO> -- node <ABS_PATH>
 Cline settings → MCP Servers → add:
 ```json
 {
-  "codeglance": {
+  "slimdex": {
     "command": "node",
     "args": ["<ABS_PATH>"],
-    "env": { "CODEGLANCE_ROOT": "<REPO>" }
+    "env": { "SLIMDEX_ROOT": "<REPO>" }
   }
 }
 ```
@@ -455,15 +455,15 @@ Cline settings → MCP Servers → add:
 ```json
 {
   "context_servers": {
-    "codeglance": {
-      "command": { "path": "node", "args": ["<ABS_PATH>"], "env": { "CODEGLANCE_ROOT": "<REPO>" } }
+    "slimdex": {
+      "command": { "path": "node", "args": ["<ABS_PATH>"], "env": { "SLIMDEX_ROOT": "<REPO>" } }
     }
   }
 }
 ```
 
 > For clients that expose the workspace folder (Cursor, VS Code),
-> `${workspaceFolder}` keeps CodeGlance pointed at the repo you have open.
+> `${workspaceFolder}` keeps Slimdex pointed at the repo you have open.
 
 ## Typical agent workflow
 

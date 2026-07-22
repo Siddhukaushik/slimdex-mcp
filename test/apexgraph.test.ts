@@ -56,7 +56,7 @@ const FILES: Record<string, string> = {
 };
 
 beforeAll(async () => {
-  root = await fs.mkdtemp(path.join(tmpdir(), "codeglance-apex-"));
+  root = await fs.mkdtemp(path.join(tmpdir(), "slimdex-apex-"));
   for (const [rel, body] of Object.entries(FILES)) {
     const full = path.join(root, rel);
     await fs.mkdir(path.dirname(full), { recursive: true });

@@ -1,6 +1,6 @@
 {
-  "name": "codeglance-mcp",
-  "version": "0.8.0",
+  "name": "slimdex-mcp",
+  "version": "0.9.0",
   "description": "A local MCP server for narrow code retrieval: outlines, symbol context, a dependency graph, and persistent memory instead of whole-file reads.",
   "type": "module",
   "keywords": [
@@ -12,13 +12,13 @@
     "code-intelligence",
     "llm"
   ],
-  "homepage": "https://github.com/Siddhukaushik/codeglance-mcp#readme",
+  "homepage": "https://github.com/Siddhukaushik/slimdex-mcp#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Siddhukaushik/codeglance-mcp.git"
+    "url": "git+https://github.com/Siddhukaushik/slimdex-mcp.git"
   },
   "bin": {
-    "codeglance-mcp": "dist/index.js"
+    "slimdex-mcp": "dist/index.js"
   },
   "files": [
     "dist",

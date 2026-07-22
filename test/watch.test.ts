@@ -30,7 +30,7 @@ async function until(check: () => Promise<boolean>, timeoutMs: number): Promise<
 
 describe("startWatcher", () => {
   it("reindexes a saved file after the debounce window", async () => {
-    root = await fs.mkdtemp(path.join(tmpdir(), "codeglance-watch-"));
+    root = await fs.mkdtemp(path.join(tmpdir(), "slimdex-watch-"));
     await fs.writeFile(path.join(root, "a.ts"), "export function first() {}\n", "utf8");
     await buildOrRefresh(root); // baseline index
 

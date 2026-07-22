@@ -1,4 +1,4 @@
-// On-disk persistence. Everything lives under <root>/.codeglance/ so it travels
+// On-disk persistence. Everything lives under <root>/.slimdex/ so it travels
 // with the repo and survives restarts. Two files:
 //   index.json   - the code symbol/import index, invalidated per-file by mtime
 //   memory.json  - freeform memory facts the agent chooses to remember
@@ -43,7 +43,7 @@ export interface MemoryStore {
 }
 
 function dir(root: string): string {
-  return path.join(root, ".codeglance");
+  return path.join(root, ".slimdex");
 }
 
 async function ensureDir(root: string): Promise<void> {

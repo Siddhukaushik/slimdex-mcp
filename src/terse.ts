@@ -1,4 +1,4 @@
-// Opt-in terse output mode. Set CODEGLANCE_TERSE=1 to shave the connective
+// Opt-in terse output mode. Set SLIMDEX_TERSE=1 to shave the connective
 // prose off tool responses — headers, "N of M" notices, truncation banners —
 // for clients where every response char is context the model pays for twice
 // (once now, once in every later turn).
@@ -8,7 +8,7 @@
 // transcript. Handlers adopt these helpers instead of inline literals so the
 // two modes can never drift apart.
 
-export const TERSE = process.env.CODEGLANCE_TERSE === "1";
+export const TERSE = process.env.SLIMDEX_TERSE === "1";
 
 // Pick between a verbose and a terse rendering of the same information.
 export function t(verbose: string, terse: string): string {

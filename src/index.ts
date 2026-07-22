@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// codeglance-mcp — a local MCP server for narrow code retrieval.
+// slimdex-mcp — a local MCP server for narrow code retrieval.
 //
-// Instead of reading whole files into context, an agent asks codeglance for exactly
+// Instead of reading whole files into context, an agent asks slimdex for exactly
 // what it needs: an outline, a compact search, a ranged read, a surgical symbol
 // snippet, a file skeleton, a one-shot context brief, a symbol index for
 // jump-to-definition, a dependency graph, a git change summary, and a persistent
-// memory store. Everything is cached under <root>/.codeglance/.
+// memory store. Everything is cached under <root>/.slimdex/.
 //
 // Transport is stdio, so it should work with any MCP client. Only Claude Code
 // and Claude Desktop have been run against it; see README for config shapes.
@@ -28,7 +28,7 @@ import { loadIndex, loadMemory, saveMemory, type MemoryFact } from "./store.js";
 import { readFileCached } from "./fscache.js";
 import { TERSE, t, fileHeader, countNotice, truncNotice } from "./terse.js";
 
-const ROOT = path.resolve(process.env.CODEGLANCE_ROOT || process.argv[2] || process.cwd());
+const ROOT = path.resolve(process.env.SLIMDEX_ROOT || process.argv[2] || process.cwd());
 
 function text(s: string) {
   return { content: [{ type: "text" as const, text: s }] };
@@ -45,7 +45,7 @@ function safeResolve(p: string): string {
 // The retrieval discipline that actually produces the savings. It lived only in
 // the README, where no agent ever reads it; MCP clients inject `instructions`
 // into the model's context, so shipping it here means every client gets it.
-const INSTRUCTIONS = `codeglance replaces "read the whole file" with narrow retrieval. To actually save tokens:
+const INSTRUCTIONS = `slimdex replaces "read the whole file" with narrow retrieval. To actually save tokens:
 
 1. Start with repo_map, not a file open. On a big repo, orient at the directory level before drilling in.
 2. Run index_repo liberally — it only reparses files whose mtime changed, so treat it like \`git fetch\`,
@@ -65,7 +65,7 @@ const INSTRUCTIONS = `codeglance replaces "read the whole file" with narrow retr
 MEMORY — this is what makes a new chat start informed instead of blank:
 
 10. FIRST action in a new session, before exploring: memory_list (or memory_search on the topic).
-    Facts saved in earlier chats live in <root>/.codeglance/memory.json and survive restarts.
+    Facts saved in earlier chats live in <root>/.slimdex/memory.json and survive restarts.
     Reading them is one cheap call and routinely saves re-deriving what a past session already worked out.
 11. memory_save anything durable the moment you learn it — an architectural decision and WHY, a
     non-obvious constraint, a gotcha that cost you time, where a surprising thing lives, a convention
@@ -83,7 +83,7 @@ MEMORY — this is what makes a new chat start informed instead of blank:
 // ---------------------------------------------------------------------------
 type Handler = (args: any) => Promise<string>;
 const handlers: Record<string, Handler> = {};
-const server = new McpServer({ name: "codeglance", version: "0.8.0" }, { instructions: INSTRUCTIONS });
+const server = new McpServer({ name: "slimdex", version: "0.9.0" }, { instructions: INSTRUCTIONS });
 
 function tool(name: string, meta: { title: string; description: string; inputSchema: any }, fn: Handler) {
   handlers[name] = fn;
@@ -109,7 +109,7 @@ tool(
     description:
       "Build or incrementally refresh the persistent code index (symbols + imports). Only files whose mtime changed " +
       "are re-parsed, so this is cheap — re-run it liberally, like `git fetch`, before trusting a search. Honors " +
-      "<root>/.codeglance.json (ignoreDirs/extensions/exclude/maxFileBytes) and reports config problems instead of " +
+      "<root>/.slimdex.json (ignoreDirs/extensions/exclude/maxFileBytes) and reports config problems instead of " +
       "silently ignoring them.",
     inputSchema: { force: z.boolean().optional().describe("Ignore cache and reparse everything.") },
   },
@@ -123,7 +123,7 @@ tool(
       (r.skipped ? `  skipped(too large): ${r.skipped}` : "") +
       `\n  symbols indexed: ${symbols}  parser: ${r.parser}\n` +
       `  config: ${r.config}${warn}\n` +
-      `Cache: ${path.join(ROOT, ".codeglance", "index.json")}`
+      `Cache: ${path.join(ROOT, ".slimdex", "index.json")}`
     );
   }
 );
@@ -554,7 +554,7 @@ tool(
   {
     title: "Tool usage and response-size accounting",
     description:
-      "Per-tool call counts and response sizes recorded to <root>/.codeglance/stats.json. Reported in characters, not " +
+      "Per-tool call counts and response sizes recorded to <root>/.slimdex/stats.json. Reported in characters, not " +
       "tokens — char/4 estimates are unreliable across tokenizers, so this measures what it can measure honestly. " +
       "Use it to see which tool is actually producing your context, and to tune limits.",
     inputSchema: { reset: z.boolean().optional().describe("Clear the counters instead of reporting them.") },
@@ -573,7 +573,7 @@ tool(
   "memory_save",
   {
     title: "Persist a memory fact",
-    description: "Save a durable note (decision, gotcha, TODO, location) to <root>/.codeglance/memory.json.",
+    description: "Save a durable note (decision, gotcha, TODO, location) to <root>/.slimdex/memory.json.",
     inputSchema: { text: z.string(), tags: z.array(z.string()).optional() },
   },
   async ({ text: t, tags }) => {
@@ -638,7 +638,7 @@ tool(
   {
     title: "Run several tool calls at once",
     description:
-      "Execute multiple codeglance calls in one request to avoid per-call protocol overhead. Pass calls: " +
+      "Execute multiple slimdex calls in one request to avoid per-call protocol overhead. Pass calls: " +
       '[{ "tool": "find_definition", "args": { "name": "login" } }, ...]. Cannot nest batch inside itself.',
     inputSchema: {
       calls: z
@@ -667,14 +667,14 @@ tool(
 // ---------------------------------------------------------------------------
 async function main() {
   await server.connect(new StdioServerTransport());
-  console.error(`codeglance-mcp v0.8.0 ready. root=${ROOT}  tools=${Object.keys(handlers).length}`);
-  // Opt-in auto-reindex on file change. Off unless CODEGLANCE_WATCH is truthy.
-  if (["1", "true", "yes"].includes((process.env.CODEGLANCE_WATCH || "").toLowerCase())) {
+  console.error(`slimdex-mcp v0.9.0 ready. root=${ROOT}  tools=${Object.keys(handlers).length}`);
+  // Opt-in auto-reindex on file change. Off unless SLIMDEX_WATCH is truthy.
+  if (["1", "true", "yes"].includes((process.env.SLIMDEX_WATCH || "").toLowerCase())) {
     const { startWatcher } = await import("./watch.js");
     startWatcher(ROOT);
   }
 }
 main().catch((e) => {
-  console.error("codeglance-mcp fatal:", e);
+  console.error("slimdex-mcp fatal:", e);
   process.exit(1);
 });

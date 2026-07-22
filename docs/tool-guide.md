@@ -1,13 +1,13 @@
-# CodeGlance tool guide
+# Slimdex tool guide
 
 Every tool the server exposes, explained twice — once technically, once in plain
 words — with an example of each, and then how they chain together into a
 workflow. All example output comes from running the tools against this very
 repository.
 
-The one-sentence pitch: **CodeGlance replaces "read the whole file" with narrow
+The one-sentence pitch: **Slimdex replaces "read the whole file" with narrow
 retrieval.** An AI assistant working on your code normally pulls entire files
-into its context window to find one function. CodeGlance keeps a persistent
+into its context window to find one function. Slimdex keeps a persistent
 index of every symbol and import, and serves small, targeted slices instead.
 
 ---
@@ -55,10 +55,10 @@ changed_files()
 ### `index_repo`
 
 **Technical:** Builds or incrementally refreshes the persistent index
-(symbols + imports) under `.codeglance/index.json`. Uses each file's **mtime**
+(symbols + imports) under `.slimdex/index.json`. Uses each file's **mtime**
 — the filesystem's "last modified" timestamp — to skip unchanged files: if the
 stored mtime equals the current one, the cached entry is reused verbatim; only
-changed files are re-parsed. Honors `.codeglance.json` config
+changed files are re-parsed. Honors `.slimdex.json` config
 (ignoreDirs/extensions/exclude/maxFileBytes).
 
 **Plain words:** Rebuilds the library's card catalog, but only re-catalogs
@@ -253,7 +253,7 @@ dep_graph(mode: "mermaid", root: "src/store.ts", depth: 1)
 ## Group 6 — Memory that survives between chats
 
 An AI session normally starts blank: everything figured out last time is gone.
-CodeGlance keeps a small notebook at `.codeglance/memory.json` — saved on your
+Slimdex keeps a small notebook at `.slimdex/memory.json` — saved on your
 disk, next to your code, surviving restarts. A new session reads the notebook
 first and starts already informed.
 
@@ -313,7 +313,7 @@ memory_delete(id: "1a517171")
 
 ### `batch`
 
-**Technical:** Executes up to 20 independent CodeGlance calls in one request,
+**Technical:** Executes up to 20 independent Slimdex calls in one request,
 eliminating per-call protocol overhead. Cannot nest.
 
 **Plain words:** Ask five questions in one breath instead of five phone calls.
@@ -330,7 +330,7 @@ batch(calls: [
 
 **Technical:** Per-tool call counts and response sizes (characters, not
 tokens — char/4 estimates are unreliable across tokenizers) recorded to
-`.codeglance/stats.json`. `reset:true` clears the counters.
+`.slimdex/stats.json`. `reset:true` clears the counters.
 
 **Plain words:** The receipt. Which tool is actually filling up the context
 window?
@@ -370,19 +370,19 @@ file?"
 3. `get_file_skeleton(path: "src/store.ts")` → 11 declarations; `ensureDir`
    at line 49 looks relevant.
 4. `get_symbol_context(name: "ensureDir")` → there it is: the function writes
-   a self-ignoring `*` gitignore into `.codeglance/`, flag `wx` so it never
+   a self-ignoring `*` gitignore into `.slimdex/`, flag `wx` so it never
    overwrites a user's edit.
-5. `memory_save(text: ".codeglance/ writes its own * .gitignore in ensureDir,
+5. `memory_save(text: ".slimdex/ writes its own * .gitignore in ensureDir,
    flag wx — never clobbers an edited one", tags: ["store"])`.
 
-Total context spent: five small answers. Without CodeGlance: reading
+Total context spent: five small answers. Without Slimdex: reading
 `store.ts`, probably `index.ts`, maybe `indexer.ts` — whole.
 
 ---
 
 ## The persistence story, end to end
 
-Everything durable lives in one folder at the repo root: **`.codeglance/`**
+Everything durable lives in one folder at the repo root: **`.slimdex/`**
 
 | File | What it holds | Invalidation |
 |---|---|---|

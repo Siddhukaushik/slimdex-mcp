@@ -1,6 +1,6 @@
-# CodeGlance — fewer tokens, fewer credits
+# Slimdex — fewer tokens, fewer credits
 
-CodeGlance cuts token usage — and therefore credits — on every chat. Use it in
+Slimdex cuts token usage — and therefore credits — on every chat. Use it in
 one session and you save on that session; use it in every session and the
 savings compound, because each chat reads less, remembers more, and never
 re-derives what a past chat already figured out. The better you follow the

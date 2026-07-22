@@ -104,7 +104,7 @@ describe("extractImports", () => {
   });
 });
 
-// ---- Regressions found by running codeglance on its own source (2026-07-21) ----
+// ---- Regressions found by running slimdex on its own source (2026-07-21) ----
 
 describe("extractSymbols — string/comment awareness", () => {
   it("does not capture 's' from the word 'functions' in prose", () => {

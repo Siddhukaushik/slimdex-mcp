@@ -10,7 +10,7 @@ import { readFileCached, clearFileCache } from "../src/fscache.js";
 let root = "";
 
 beforeAll(async () => {
-  root = await fs.mkdtemp(path.join(tmpdir(), "codeglance-fsc-"));
+  root = await fs.mkdtemp(path.join(tmpdir(), "slimdex-fsc-"));
 });
 
 afterAll(async () => {

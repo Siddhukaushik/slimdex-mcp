@@ -8,7 +8,7 @@ import { getSymbolContext } from "../src/intel.js";
 let root: string;
 
 beforeAll(async () => {
-  root = await mkdtemp(path.join(tmpdir(), "codeglance-test-"));
+  root = await mkdtemp(path.join(tmpdir(), "slimdex-test-"));
   await mkdir(path.join(root, "src"), { recursive: true });
   await writeFile(
     path.join(root, "src", "a.ts"),

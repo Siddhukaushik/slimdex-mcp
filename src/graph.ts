@@ -99,7 +99,7 @@ const NAMEREF_KINDS = new Set(["class", "interface", "enum", "type", "trigger"])
 // system, never retrieved into the repo, remains out of reach.
 const META_IGNORE = new Set([
   ".git", "node_modules", "dist", "build", "out", "target", "coverage", "vendor",
-  ".sfdx", ".sf", ".codeglance", ".idea", ".vscode", "__pycache__", ".venv", "venv",
+  ".sfdx", ".sf", ".slimdex", ".idea", ".vscode", "__pycache__", ".venv", "venv",
 ]);
 const META_FILE_CAP = 3000; // scan bound for pathological repos
 const META_BYTE_CAP = 256 * 1024;

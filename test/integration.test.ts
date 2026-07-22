@@ -7,7 +7,7 @@
 //
 // Runs against a temporary fixture repo rather than this one: assertions stay
 // stable as the real source changes, and memory_save writes land in a temp dir
-// instead of polluting the developer's own .codeglance/memory.json.
+// instead of polluting the developer's own .slimdex/memory.json.
 
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -53,7 +53,7 @@ const FILES: Record<string, string> = {
 
 beforeAll(async () => {
   if (!built) return;
-  root = await fs.mkdtemp(path.join(tmpdir(), "codeglance-it-"));
+  root = await fs.mkdtemp(path.join(tmpdir(), "slimdex-it-"));
   for (const [rel, body] of Object.entries(FILES)) {
     const full = path.join(root, rel);
     await fs.mkdir(path.dirname(full), { recursive: true });
@@ -62,7 +62,7 @@ beforeAll(async () => {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [SERVER],
-    env: { ...process.env, CODEGLANCE_ROOT: root } as Record<string, string>,
+    env: { ...process.env, SLIMDEX_ROOT: root } as Record<string, string>,
   });
   client = new Client({ name: "integration", version: "1.0.0" });
   await client.connect(transport);

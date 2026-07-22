@@ -43,7 +43,7 @@ const APP = [
 
 beforeAll(async () => {
   if (!hasGit) return;
-  root = await fs.mkdtemp(path.join(tmpdir(), "codeglance-git-"));
+  root = await fs.mkdtemp(path.join(tmpdir(), "slimdex-git-"));
   await run("git", ["init"], { cwd: root });
   await git("config", "user.email", "test@example.com");
   await git("config", "user.name", "Test");
@@ -67,7 +67,7 @@ afterAll(async () => {
 describe.skipIf(!hasGit)("changed_files against a real git repo", () => {
   it("isGitRepo distinguishes a checkout from a plain directory", async () => {
     expect(await isGitRepo(root)).toBe(true);
-    const plain = await fs.mkdtemp(path.join(tmpdir(), "codeglance-plain-"));
+    const plain = await fs.mkdtemp(path.join(tmpdir(), "slimdex-plain-"));
     try {
       expect(await isGitRepo(plain)).toBe(false);
     } finally {

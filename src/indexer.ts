@@ -10,7 +10,7 @@ import { loadIndex, saveIndex, INDEX_VERSION, type CodeIndex, type FileEntry } f
 const IGNORE_DIRS = new Set([
   ".git", "node_modules", "dist", "build", "out", ".next", ".nuxt", "target",
   "__pycache__", ".venv", "venv", "env", ".idea", ".vscode", "coverage",
-  ".codeglance", ".cache", "vendor", "bin", "obj", ".gradle", ".mvn",
+  ".slimdex", ".cache", "vendor", "bin", "obj", ".gradle", ".mvn",
   // Salesforce DX writes generated apex/lwc typings here — thousands of lines
   // of machine output with no symbols worth indexing.
   ".sfdx", ".sf",
@@ -31,17 +31,17 @@ export function toPosix(p: string): string {
   return p.split(path.sep).join("/");
 }
 
-// Optional per-repo config at <root>/.codeglance.json:
+// Optional per-repo config at <root>/.slimdex.json:
 //   { "ignoreDirs": ["fixtures"], "extensions": [".astro"], "exclude": ["generated/"],
 //     "maxFileBytes": 2000000 }
-interface CodeglanceConfig {
+interface SlimdexConfig {
   ignoreDirs: Set<string>;
   extensions: Set<string>;
   exclude: string[]; // substring match against repo-relative posix path
   maxFileBytes: number;
   // Reported back to the caller so a typo'd key or malformed JSON is visible in
   // index_repo's output. Silently swallowing config errors made a broken
-  // .codeglance.json indistinguishable from having none at all.
+  // .slimdex.json indistinguishable from having none at all.
   present: boolean;
   warnings: string[];
   summary: string;
@@ -49,7 +49,7 @@ interface CodeglanceConfig {
 
 const KNOWN_KEYS = new Set(["ignoreDirs", "extensions", "exclude", "maxFileBytes"]);
 
-async function loadConfig(root: string): Promise<CodeglanceConfig> {
+async function loadConfig(root: string): Promise<SlimdexConfig> {
   const ignoreDirs = new Set(IGNORE_DIRS);
   const extensions = new Set(CODE_EXT);
   const exclude: string[] = [];
@@ -60,22 +60,22 @@ async function loadConfig(root: string): Promise<CodeglanceConfig> {
 
   let raw: string;
   try {
-    raw = await fs.readFile(path.join(root, ".codeglance.json"), "utf8");
+    raw = await fs.readFile(path.join(root, ".slimdex.json"), "utf8");
     present = true;
   } catch {
-    return { ignoreDirs, extensions, exclude, maxFileBytes, present: false, warnings, summary: "no .codeglance.json (defaults)" };
+    return { ignoreDirs, extensions, exclude, maxFileBytes, present: false, warnings, summary: "no .slimdex.json (defaults)" };
   }
 
   let cfg: Record<string, unknown>;
   try {
     cfg = JSON.parse(raw);
   } catch (e) {
-    warnings.push(`.codeglance.json is not valid JSON (${(e as Error).message}) — ignoring it and using defaults`);
-    return { ignoreDirs, extensions, exclude, maxFileBytes, present, warnings, summary: "invalid .codeglance.json" };
+    warnings.push(`.slimdex.json is not valid JSON (${(e as Error).message}) — ignoring it and using defaults`);
+    return { ignoreDirs, extensions, exclude, maxFileBytes, present, warnings, summary: "invalid .slimdex.json" };
   }
 
   for (const key of Object.keys(cfg)) {
-    if (!KNOWN_KEYS.has(key)) warnings.push(`unknown key "${key}" in .codeglance.json (known: ${[...KNOWN_KEYS].join(", ")})`);
+    if (!KNOWN_KEYS.has(key)) warnings.push(`unknown key "${key}" in .slimdex.json (known: ${[...KNOWN_KEYS].join(", ")})`);
   }
 
   const asArray = (key: string): unknown[] => {
@@ -109,12 +109,12 @@ async function loadConfig(root: string): Promise<CodeglanceConfig> {
   }
 
   const summary =
-    `.codeglance.json loaded (+${added.ignoreDirs} ignoreDirs, +${added.extensions} extensions, ` +
+    `.slimdex.json loaded (+${added.ignoreDirs} ignoreDirs, +${added.extensions} extensions, ` +
     `${added.exclude} exclude rules, maxFileBytes ${maxFileBytes})`;
   return { ignoreDirs, extensions, exclude, maxFileBytes, present, warnings, summary };
 }
 
-async function walk(root: string, dir: string, acc: string[], cfg: CodeglanceConfig): Promise<void> {
+async function walk(root: string, dir: string, acc: string[], cfg: SlimdexConfig): Promise<void> {
   let entries: import("node:fs").Dirent[];
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });

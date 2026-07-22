@@ -1,5 +1,5 @@
 // Optional auto-reindex on file change. Off by default; enable with
-// CODEGLANCE_WATCH=1. Uses Node's built-in recursive fs.watch (no dependency) and
+// SLIMDEX_WATCH=1. Uses Node's built-in recursive fs.watch (no dependency) and
 // debounces bursts of events (editors emit several per save) into one refresh.
 //
 // This is a convenience layer on top of the mtime-incremental indexer: it just
@@ -23,9 +23,9 @@ export function startWatcher(root: string): () => void {
     running = true;
     try {
       const r = await buildOrRefresh(root, false);
-      if (r.parsed || r.removed) console.error(`codeglance watch: reindexed (parsed ${r.parsed}, removed ${r.removed})`);
+      if (r.parsed || r.removed) console.error(`slimdex watch: reindexed (parsed ${r.parsed}, removed ${r.removed})`);
     } catch (e) {
-      console.error("codeglance watch: refresh failed:", (e as Error).message);
+      console.error("slimdex watch: refresh failed:", (e as Error).message);
     } finally {
       running = false;
       if (dirty) {
@@ -45,16 +45,16 @@ export function startWatcher(root: string): () => void {
       if (!filename) return;
       const f = filename.toString();
       // ignore our own cache and obvious noise so we don't loop on ourselves
-      if (f.includes(".codeglance") || f.includes("node_modules") || f.includes(".git")) return;
+      if (f.includes(".slimdex") || f.includes("node_modules") || f.includes(".git")) return;
       schedule();
     });
-    console.error(`codeglance watch: watching ${root} for changes`);
+    console.error(`slimdex watch: watching ${root} for changes`);
     return () => {
       if (timer) clearTimeout(timer);
       watcher.close();
     };
   } catch (e) {
-    console.error(`codeglance watch: not available on this platform (${(e as Error).message}); use index_repo manually`);
+    console.error(`slimdex watch: not available on this platform (${(e as Error).message}); use index_repo manually`);
     return () => {};
   }
 }

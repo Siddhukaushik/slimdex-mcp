@@ -11,7 +11,7 @@ const serverPath = path.join(process.cwd(), "dist", "index.js");
 const transport = new StdioClientTransport({
   command: process.execPath,
   args: [serverPath],
-  env: { ...process.env, CODEGLANCE_ROOT: root },
+  env: { ...process.env, SLIMDEX_ROOT: root },
 });
 const client = new Client({ name: "smoke", version: "1.0.0" });
 await client.connect(transport);
@@ -38,7 +38,7 @@ await call("changed_files", {});
 // every run, so a repo's memory store slowly filled with "smoke test ran" rows —
 // test noise crowding out real facts. Correctness assertions live in
 // test/integration.test.ts; this script only proves the pipeline is alive.
-const saved = await call("memory_save", { text: "codeglance smoke test ran", tags: ["test"] });
+const saved = await call("memory_save", { text: "slimdex smoke test ran", tags: ["test"] });
 await call("memory_list", {});
 const id = saved.match(/[0-9a-f]{6,}/)?.[0];
 if (id) await call("memory_delete", { id });

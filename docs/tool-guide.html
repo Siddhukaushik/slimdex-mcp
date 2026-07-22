@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CodeGlance — tool guide</title>
+<title>Slimdex — tool guide</title>
 <style>
   :root {
     --bg: #ffffff; --fg: #1a1a1a; --muted: #6b7280;
@@ -81,15 +81,15 @@
 <body>
 <main>
 
-<h1>CodeGlance — tool guide</h1>
+<h1>Slimdex — tool guide</h1>
 <p class="sub">Every tool, explained twice — once technically, once in plain words —
 with examples, and how they chain into a workflow. All sample output comes from
 running the tools against this repository.</p>
 
 <div class="pitch">
-The one-sentence pitch: <strong>CodeGlance replaces "read the whole file" with
+The one-sentence pitch: <strong>Slimdex replaces "read the whole file" with
 narrow retrieval.</strong> An AI assistant normally pulls entire files into its
-context window to find one function. CodeGlance keeps a persistent index of
+context window to find one function. Slimdex keeps a persistent index of
 every symbol and import, and serves small, targeted slices instead.
 </div>
 
@@ -130,10 +130,10 @@ every symbol and import, and serves small, targeted slices instead.
 <div class="tool">
   <h3>index_repo</h3>
   <p class="tech"><b>Technical</b>Builds or incrementally refreshes the persistent
-  index (symbols + imports) under <code>.codeglance/index.json</code>. Uses each
+  index (symbols + imports) under <code>.slimdex/index.json</code>. Uses each
   file's <strong>mtime</strong> — the filesystem's "last modified" timestamp — to
   skip unchanged files: stored mtime equals current mtime → reuse the cached entry;
-  otherwise re-parse just that file. Honors <code>.codeglance.json</code> config.</p>
+  otherwise re-parse just that file. Honors <code>.slimdex.json</code> config.</p>
   <div class="plain"><b>Plain words</b>Rebuilds the library's card catalog, but only
   re-catalogs books that were edited since last time. Every file carries a hidden
   timestamp saying when it last changed; matching timestamp = nothing to redo.
@@ -292,8 +292,8 @@ index — far cheaper and less noisy than text-searching raw files.</p>
 
 <h2><span class="g">Group 6</span>Memory that survives between chats</h2>
 <p class="groupnote">An AI session normally starts blank: everything figured out
-last time is gone. CodeGlance keeps a small notebook at
-<code>.codeglance/memory.json</code> — saved on your disk, next to your code,
+last time is gone. Slimdex keeps a small notebook at
+<code>.slimdex/memory.json</code> — saved on your disk, next to your code,
 surviving restarts. A new session reads the notebook first and starts already
 informed. Rule of thumb: save <strong>decisions, gotchas, and "why"s</strong> —
 things the code itself cannot tell you.</p>
@@ -339,7 +339,7 @@ things the code itself cannot tell you.</p>
 
 <div class="tool">
   <h3>batch</h3>
-  <p class="tech"><b>Technical</b>Executes up to 20 independent CodeGlance calls in
+  <p class="tech"><b>Technical</b>Executes up to 20 independent Slimdex calls in
   one request, eliminating per-call protocol overhead. Cannot nest.</p>
   <div class="plain"><b>Plain words</b>Ask five questions in one breath instead of
   five phone calls.</div>
@@ -354,7 +354,7 @@ things the code itself cannot tell you.</p>
   <h3>stats</h3>
   <p class="tech"><b>Technical</b>Per-tool call counts and response sizes
   (characters, not tokens — char/4 estimates are unreliable across tokenizers)
-  recorded to <code>.codeglance/stats.json</code>. <code>reset:true</code> clears the
+  recorded to <code>.slimdex/stats.json</code>. <code>reset:true</code> clears the
   counters.</p>
   <div class="plain"><b>Plain words</b>The receipt. Which tool is actually filling
   up the context window?</div>
@@ -393,18 +393,18 @@ question, not to the size of the repository.</p>
   <li><code>get_file_skeleton(path: "src/store.ts")</code> → 11 declarations;
       <code>ensureDir</code> at line 49 looks relevant.</li>
   <li><code>get_symbol_context(name: "ensureDir")</code> → there it is: the function
-      writes a self-ignoring <code>*</code> gitignore into <code>.codeglance/</code>,
+      writes a self-ignoring <code>*</code> gitignore into <code>.slimdex/</code>,
       flag <code>wx</code> so it never overwrites a user's edit.</li>
   <li><code>memory_save(...)</code> — record the finding for the next session.</li>
 </ol>
-<p>Total context spent: five small answers. Without CodeGlance: reading
+<p>Total context spent: five small answers. Without Slimdex: reading
 <code>store.ts</code>, probably <code>index.ts</code>, maybe
 <code>indexer.ts</code> — whole.</p>
 
 <h2><span class="g">Persistence</span>The on-disk story, end to end</h2>
 
 <p>Everything durable lives in one folder at the repo root:
-<code>.codeglance/</code></p>
+<code>.slimdex/</code></p>
 
 <table>
   <tr><th>File</th><th>What it holds</th><th>Invalidation</th></tr>
