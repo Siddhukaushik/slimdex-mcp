@@ -193,7 +193,6 @@ export async function buildOrRefresh(root: string, force = false): Promise<Index
     } catch {
       continue;
     }
-    const parser = getParser();
     const entry: FileEntry = {
       mtimeMs: stat.mtimeMs,
       lines: source.split(/\r?\n/).length,

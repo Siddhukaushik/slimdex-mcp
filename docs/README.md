@@ -15,7 +15,7 @@ external assets, and follow the system light/dark theme.
 
 Every figure in these documents came from a real run against a real repository —
 nothing is illustrative. But they are **single measurements, not benchmarks**:
-one project, one A/B run each, taken by the author. The method is written down in
+one project, one A/B run each. The method is written down in
 `token-savings-report.md` precisely so it can be disputed or repeated.
 
 The headline pair is worth understanding rather than quoting:

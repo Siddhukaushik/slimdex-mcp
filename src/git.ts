@@ -73,19 +73,41 @@ function parseHunks(patch: string): Map<string, number[]> {
 // base:
 //   undefined -> working tree vs HEAD (plus untracked files)
 //   "main", "HEAD~3", a sha -> that ref vs the working tree
-export async function changedFiles(root: string, index: CodeIndex, base?: string): Promise<ChangedFile[]> {
-  const diffArgs = base ? ["diff", "--unified=0", base] : ["diff", "--unified=0", "HEAD"];
-  const statArgs = base ? ["diff", "--numstat", base] : ["diff", "--numstat", "HEAD"];
+// `--name-status` lines: "M\tpath", "A\tpath", "D\tpath", "R100\told\tnew".
+// Keyed by the *new* path so it lines up with numstat and the hunk map.
+function parseNameStatus(out: string): Map<string, string> {
+  const byFile = new Map<string, string>();
+  for (const line of out.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const parts = line.split("\t");
+    const code = parts[0][0]; // strip rename/copy similarity score (R100 -> R)
+    const file = parts[parts.length - 1];
+    if (file) byFile.set(toPosix(file), code);
+  }
+  return byFile;
+}
 
-  const [patch, numstat] = await Promise.all([git(root, diffArgs), git(root, statArgs)]);
+export async function changedFiles(root: string, index: CodeIndex, base?: string): Promise<ChangedFile[]> {
+  const ref = base ?? "HEAD";
+  const [patch, numstat, nameStatus] = await Promise.all([
+    git(root, ["diff", "--unified=0", ref]),
+    git(root, ["diff", "--numstat", ref]),
+    git(root, ["diff", "--name-status", ref]),
+  ]);
   const hunks = parseHunks(patch);
+  const statuses = parseNameStatus(nameStatus);
 
   const out: ChangedFile[] = [];
   for (const line of numstat.split(/\r?\n/)) {
     if (!line.trim()) continue;
     const [a, d, file] = line.split("\t");
     if (!file) continue;
-    const rel = toPosix(file);
+    // numstat spells a rename "src/{old.ts => new.ts}" or "old.ts => new.ts";
+    // collapse to the new path so it matches the index and the status map.
+    const renamed = file.includes(" => ")
+      ? file.replace(/\{([^}]*) => ([^}]*)\}/g, "$2").replace(/^(.*) => (.*)$/, "$2").replace(/\/\//g, "/")
+      : file;
+    const rel = toPosix(renamed);
     const entry = index.files[rel];
     const touched = hunks.get(rel) ?? [];
     const names = new Set<string>();
@@ -97,7 +119,7 @@ export async function changedFiles(root: string, index: CodeIndex, base?: string
     }
     out.push({
       file: rel,
-      status: "M",
+      status: statuses.get(rel) ?? "M",
       added: a === "-" ? 0 : Number(a),
       deleted: d === "-" ? 0 : Number(d),
       // Cap the list: a file whose diff touches 40 functions should say so, not

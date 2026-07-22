@@ -5,7 +5,7 @@ A local [MCP](https://modelcontextprotocol.io) server that helps coding agents
 asks CodeGlance for a specific outline, line range, symbol body, or reference
 list, rather than loading a file to find one thing.
 
-> **Status: pre-1.0, personal project.** It works on the repos it has been run
+> **Status: pre-1.0.** It works on the repos it has been run
 > against, but it has not been published, packaged, or validated broadly. Read
 > [What's actually verified](#whats-actually-verified) before relying on it.
 
@@ -39,11 +39,13 @@ does it depend on" in one response. Drop to `get_symbol_context` for one body,
 source. Use `batch` to bundle several lookups. Every search tool takes `limit`
 (default 20) and `offset`.
 
-**Response budgeting:** `get_context` sections are opt-in via `include`, callers
-are capped by `callerLimit`, and the response is bounded by `maxChars`. Every cap
-that trips prints an explicit notice (`showing 3 of 68`,
-`truncated at maxChars=...`) rather than dropping data silently.
-`get_symbol_context` caps its span with `maxLines` the same way.
+**Response budgeting:** `get_context` sections are opt-in via `include`
+(default: definition, signature, callers, imports — add `body` or `dependents`
+explicitly), callers are capped by `callerLimit`, and the response is bounded
+by `maxChars` (default 12,000). Every cap that trips prints an explicit notice
+(`showing 3 of 68`, `truncated at maxChars=...`) rather than dropping data
+silently. `get_symbol_context` caps its span with `maxLines` the same way, and
+`memory_list` returns the newest 50 facts unless told otherwise.
 
 ### Config: `<root>/.codeglance.json` (optional)
 
@@ -94,7 +96,7 @@ instructed to use only CodeGlance and one instructed to avoid it, and compare
 
 Being explicit, since the rest of this README is easy to over-read.
 
-**Covered by the unit suite** (`npm test` runs 121 tests across 9 files):
+**Covered by the unit suite** (`npm test` runs 158 tests across 14 files):
 
 - Symbol extraction across JS/TS (incl. class and object-literal methods),
   Python, Go, Rust, Java/C#, and comment skipping — `symbols.test.ts`
@@ -113,6 +115,20 @@ Being explicit, since the rest of this README is easy to over-read.
 - String/comment masking and brace-depth tracking — `lexer.test.ts`
 - Per-language extraction for all twelve supported languages — `languages.test.ts`
 - The index cache returns the same object until the index is rewritten
+- `.codeglance.json` loading: every key applied through a real index build, plus
+  the failure modes (invalid JSON, unknown keys, wrong types) each producing a
+  visible warning instead of silence — `config.test.ts`
+- `changed_files` against a real temporary git repository: hunk→symbol
+  attribution, untracked files, explicit base refs, and formatting; skips
+  cleanly when git isn't installed — `git.test.ts`
+- The file watcher, with real fs events: a save is debounced, reindexed, and
+  lands in the on-disk index — `watch.test.ts`
+- Graph edges beyond imports: name-reference edges for import-less code
+  (class→used-class, interface→implementation via dependents, trigger→handler)
+  and declarative-wiring edges from repo XML (metadata-binding→class), with
+  comment/string mentions excluded and per-build caching — `apexgraph.test.ts`
+- The in-memory file cache serves repeats without re-reading and always serves
+  fresh content after an on-disk change — `fscache.test.ts`
 
 **Covered end to end, through the real MCP server** (`integration.test.ts` spawns
 the server over stdio against a temporary fixture repo and asserts on output):
@@ -124,9 +140,10 @@ round trip, the path-escape guard, and the not-found paths.
 
 CI runs the build and both suites on Ubuntu + Windows, Node 20 and 22.
 
-**Still untested:** file watching (`src/watch.ts`), `.codeglance.json` config
-loading, and `changed_files` (`src/git.ts`), which needs a git fixture. These are
-manually exercised only and can regress silently.
+**Caveat on the watcher test:** recursive `fs.watch` is platform-dependent, so
+`watch.test.ts` degrades to a logged skip on filesystems that never deliver an
+event — same behavior as the watcher itself. On Windows, macOS, and current
+Linux it asserts the full save→reindex path.
 
 `npm run smoke` still exists but proves only that the pipeline is alive — the
 correctness assertions live in `integration.test.ts`.
@@ -180,12 +197,25 @@ has no top-level declarations at all, so entire test directories used to index t
 nothing. `describe`/`it`/`test` titles are now indexed as kind `test`, which is
 what you actually navigate to in a test file.
 
-What is *not* covered is framework **semantics**. `Application.Service.newInstance(IAccountService.class)`
-resolves at runtime, so `find_references` cannot connect it to the concrete
-class; the same is true of any dependency-injection container, and of
-trigger-to-handler wiring done in metadata. Decoupling is the point of those
-frameworks, and that decoupling is exactly what hides the edge from a static
-reader. Search for the interface name instead.
+Framework **semantics** are recovered wherever the reference exists somewhere
+in the repo, through two extra edge sources in the graph:
+
+- **Name-reference edges**, for languages that have no import statement (e.g.
+  Apex): if one file's code — comments and strings masked out — mentions a
+  top-level type defined in another file, that's an edge. This is what makes
+  `implements` answerable as "who implements this interface", and links a
+  trigger to the handler class it news up.
+- **Declarative-wiring edges**: bindings that frameworks keep in configuration
+  rather than code (custom-metadata records, flow definitions) usually live in
+  the repo as XML with the type name as an element value. Repo XML is scanned
+  for known type names — XML comments excluded — and each hit becomes a
+  `metadata-file → class` edge, so `dependents` answers "what wires this up".
+
+Both scans are cached per index build and cost nothing on repos without such
+files. Pinned by `apexgraph.test.ts`. What no static reader can see is a
+binding that exists **only in a live system** — configured in a running org or
+database and never retrieved into the repo. If it's not in the repo in any
+form, there is no edge to draw; search the type name instead.
 
 | Language | Extensions | What's recognised |
 |---|---|---|
@@ -198,10 +228,10 @@ reader. Search for the interface name instead.
 | Python | `.py` | classes, `def`, `async def`, dunder and decorated methods |
 | Go | `.go` | funcs, receiver methods, struct and interface types |
 | Rust | `.rs` | structs, enums, traits, `fn`, `pub async fn`, impl methods |
-| Ruby | `.rb` | classes, modules, `def`, `def self.x` |
+| Ruby | `.rb` | classes, modules, `def`, `def self.x`, `attr_accessor/reader/writer` |
 | PHP | `.php` | classes, interfaces, traits, methods, functions |
 | Scala | `.scala` | classes, case classes, traits, objects, `def` with modifiers |
-| C / C++ / Objective-C | `.c .h .cpp .hpp .cc .m .mm` | classes, structs, enums, methods — the thinnest coverage here |
+| C / C++ / Objective-C | `.c .h .cpp .hpp .cc .m .mm` | classes, structs, enums, free functions (incl. K&R braces, pointer returns), `Foo::bar` out-of-class definitions, ctors/dtors, namespaces, function-like `#define` macros, `typedef struct {…} Name`, `@interface`/`@implementation`/`@protocol` |
 
 ## Performance
 
@@ -218,9 +248,16 @@ The index is held in memory and invalidated by the index file's mtime. Without
 that cache every tool call re-read and re-parsed the whole index — about 20 ms of
 dead weight per call on the 5,000-file repo, and it grew with the repo.
 
-`find_references` is the one slow tool at scale (~0.7 s across 5,000 files)
-because it is a textual scan of every file, not an index lookup. Scope it with
-`pathPrefix` when you know roughly where to look.
+`find_references` is the slowest tool at scale because it is a textual scan,
+not an index lookup — but a literal pre-filter now skips the line-split and
+per-line regex for any file whose raw source doesn't contain the searched name,
+which on a typical repo is most of them. Scope with `pathPrefix` to cut the
+remaining file reads when you know roughly where to look.
+
+File contents are also served from a byte-bounded in-memory LRU (64 MB,
+validated by mtime+size per hit), so the second scan of a repo — and the
+skeleton→read_lines→context sequence agents actually perform on one file —
+costs a `stat()` instead of a read.
 
 ## Memory across sessions
 
@@ -254,8 +291,10 @@ gotchas as it learns them — but that's guidance to the model, not a guarantee.
 - `search_code` reports an exact total but stops at an internal scan cap on very
   large result sets, printing `N+ (scan cap reached)` rather than a confident
   wrong number.
-- Language support is uneven: JS/TS is the best-covered, C-family and Ruby are
-  the thinnest.
+- Language support is uneven: JS/TS is the best-covered. C-family and Ruby,
+  formerly the thinnest, gained dedicated rules (free functions, `Foo::bar`
+  definitions, function-like macros, `attr_*`); the remaining soft spots are
+  advanced C++ shapes — templates split across lines, operator overloads.
 - For LSP-grade precision you'd swap the parser for tree-sitter or a language
   server. `src/parser.ts` is the seam: a `Parser` interface selected by
   `CODEGLANCE_PARSER`, with the regex parser as the only implementation that
@@ -314,8 +353,9 @@ node smoke-test.mjs "C:/path/to/some/repo"   # any other
 | Var | Effect |
 |-----|--------|
 | `CODEGLANCE_ROOT` | Repo to index (or pass as the first CLI arg; defaults to cwd) |
-| `CODEGLANCE_WATCH` | Set to `1` to auto-reindex on file save (native watcher, no deps; untested) |
+| `CODEGLANCE_WATCH` | Set to `1` to auto-reindex on file save (native watcher, no deps) |
 | `CODEGLANCE_PARSER` | Parser backend; only `regex` exists today |
+| `CODEGLANCE_TERSE` | Set to `1` for terser response text: shorter headers and no column padding in `search_code`, `find_definition`, `search_symbols`, `find_references`, `repo_map`, `read_lines`. Default output is byte-identical to before. |
 
 ## The persistent cache
 
@@ -327,7 +367,10 @@ Per repository, CodeGlance writes to `<repo>/.codeglance/`:
 - `memory.json` — saved memory facts
 - `stats.json` — per-tool usage counters
 
-Add `.codeglance/` to that repo's `.gitignore` if you don't want to commit it.
+The directory ignores itself: a `*` `.gitignore` is written inside it (the
+`node_modules/.cache` trick), so it never shows up in `git status` and you don't
+have to touch the repo's own `.gitignore`. Delete that inner file if you *want*
+to commit the cache.
 
 ---
 

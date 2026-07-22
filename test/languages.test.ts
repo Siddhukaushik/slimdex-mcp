@@ -134,6 +134,91 @@ describe("Ruby", () => {
     expect(got).toContain("total_amount");
     expect(got).not.toContain("self");
   });
+
+  it("finds attr_accessor / attr_reader / attr_writer declarations", () => {
+    const src = [
+      "class Account",
+      "  attr_accessor :balance, :owner",
+      "  attr_reader :created_at",
+      "  attr_writer :flagged?",
+      "end",
+    ].join("\n");
+    expectAll(src, ["balance", "created_at", "flagged?"]);
+  });
+});
+
+describe("C / C++", () => {
+  it("finds unindented free functions, including pointer returns and K&R braces", () => {
+    const src = [
+      "#include <stdio.h>",
+      "static void helper(void) {",
+      "}",
+      "char *duplicate(const char *s) {",
+      "}",
+      "int main(int argc, char **argv)",
+      "{",
+      "  return 0;",
+      "}",
+      "int prototype_only(int x);", // declaration, not definition — stays out
+    ].join("\n");
+    const got = names(src);
+    expectAll(src, ["helper", "duplicate", "main"]);
+    expect(got).not.toContain("prototype_only");
+  });
+
+  it("finds qualified out-of-class definitions, ctors and dtors", () => {
+    const src = [
+      "void Widget::render(const Ctx &ctx) {",
+      "}",
+      "Widget::Widget() : id_(0) {",
+      "}",
+      "Widget::~Widget() {",
+      "}",
+      "int Registry::count() const noexcept {",
+      "}",
+      "Widget::render(ctx);", // a qualified *call* must not register
+    ].join("\n");
+    const got = names(src);
+    expectAll(src, ["render", "Widget", "~Widget", "count"]);
+    expect(got.filter((n) => n === "render").length).toBe(1);
+  });
+
+  it("finds namespaces, function-like macros and typedef'd structs", () => {
+    const src = [
+      "namespace app::detail {",
+      "}",
+      "#define MAX(a, b) ((a) > (b) ? (a) : (b))",
+      "#define PLAIN_CONSTANT 42", // object-like: deliberately not indexed
+      "typedef struct {",
+      "  int x;",
+      "} Point;",
+    ].join("\n");
+    const got = names(src);
+    expectAll(src, ["app::detail", "MAX", "Point"]);
+    expect(got).not.toContain("PLAIN_CONSTANT");
+  });
+
+  it("does not mistake top-level scripting-language calls for C functions", () => {
+    expect(names("assert validate(x)\n")).toEqual([]);
+    expect(names("puts render(x)\n")).toEqual([]);
+    expect(names('export default connect(mapState)(App);\n')).toEqual([]);
+  });
+});
+
+describe("Objective-C", () => {
+  it("finds @interface / @implementation / @protocol containers", () => {
+    const src = [
+      "@interface PhotoView : UIView",
+      "@end",
+      "@implementation PhotoView",
+      "- (void)renderInto:(CGRect)rect {",
+      "}",
+      "@end",
+      "@protocol Cachable",
+      "@end",
+    ].join("\n");
+    expectAll(src, ["PhotoView", "renderInto", "Cachable"]);
+  });
 });
 
 describe("PHP", () => {

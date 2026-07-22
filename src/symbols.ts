@@ -178,6 +178,39 @@ const RULES: Rule[] = [
   // ---- Java / C# / C++ (methods & types) ----
   { kind: "class", re: /\b(?:public|private|protected|internal|static|final|sealed|abstract|\s)*class\s+([A-Za-z0-9_]+)/ },
   { kind: "type", re: /\b(?:public|private|protected|internal|\s)*(?:struct|enum|interface)\s+([A-Za-z0-9_]+)/ },
+  // ---- C / C++ ----
+  { kind: "namespace", re: /^\s*namespace\s+([A-Za-z_][\w:]*)/ },
+  // Out-of-class definitions: `void Foo::bar(int) {`, `Foo::Foo()`,
+  // `Foo::~Foo()`. These are where C++ method *bodies* live, and no other rule
+  // saw them. Rejecting a trailing `;` keeps qualified *calls* out.
+  {
+    kind: "method",
+    re: /^[\w:<>,*&~\s]*?\b[A-Za-z_]\w*::(~?[A-Za-z_]\w*)\s*\([^;]*\)\s*(?:const\b\s*)?(?:noexcept\b\s*)?\{?\s*$/,
+    reject: NOT_A_METHOD,
+  },
+  // Free functions at column 0: `static void helper(void) {`, `char *dup(...)`.
+  // The indented-method rules above all require leading whitespace, so plain C
+  // functions were completely invisible. Demands two identifiers before the
+  // paren (return type then name) so a call like `foo(x)` can't match, plus a
+  // statement-keyword guard for the scripting languages where top-level calls
+  // are legal (`assert validate(x)`, `puts render(x)`).
+  {
+    kind: "function",
+    re: new RegExp(
+      "^(?!(?:if|for|while|switch|return|else|do|goto|typedef|using|namespace|template|case|new|delete|throw|await|yield|" +
+        "assert|print|puts|raise|require|require_relative|include|extend|del|not|and|or|elif|elsif|unless|until|import|export|declare|package|" +
+        // words that open a declaration some LATER, better-typed rule owns
+        "trigger|def|fun|func|fn)\\b)" +
+        "(?:[A-Za-z_]\\w*(?:\\s*\\*+\\s*|\\s+))+\\**([A-Za-z_]\\w*)\\s*\\([^;]*\\)\\s*\\{?\\s*$"
+    ),
+    reject: NOT_A_METHOD,
+  },
+  // Function-like macros: `#define MAX(a, b) …`. Requires the `(` to touch the
+  // name — exactly the C preprocessor's own rule — which is also what keeps a
+  // Python comment like `# define the schema (see docs)` from matching.
+  { kind: "macro", re: /^\s*#\s*define\s+([A-Za-z_]\w*)\(/ },
+  // `typedef struct { … } Name;` — the name lives on the closing line.
+  { kind: "type", re: /^\}\s*([A-Za-z_]\w*)\s*;\s*$/ },
   // ---- Apex trigger ----
   { kind: "trigger", re: /^\s*trigger\s+([A-Za-z0-9_]+)\s+on\b/ },
   // ---- Ruby / Scala ----
@@ -188,13 +221,22 @@ const RULES: Rule[] = [
     re: /^\s*(?:(?:private|protected|public|override|final|implicit|lazy)\s+)*def\s+(?:self\.)?([A-Za-z0-9_?!]+)/,
   },
   { kind: "class", re: /^\s*(?:class|module)\s+([A-Za-z0-9_:]+)/ },
+  // Ruby attribute declarations: `attr_accessor :name, :age`. These generate
+  // the reader/writer a caller navigates to, so they ARE the declaration site.
+  // (Only the first name on the line is captured — one symbol per line.)
+  { kind: "attribute", re: /^\s*attr_(?:accessor|reader|writer)\s+:([A-Za-z_]\w*[?!]?)/ },
   // ---- Objective-C ----
+  { kind: "class", re: /^\s*@(?:interface|implementation|protocol)\s+([A-Za-z_]\w*)/ },
   { kind: "method", re: /^\s*[-+]\s*\([^)]*\)\s*([A-Za-z_][A-Za-z0-9_]*)/ },
 ];
 
 function isComment(line: string): boolean {
   const t = line.trim();
-  return t.startsWith("//") || t.startsWith("#") || t.startsWith("*") || t.startsWith("/*") || t.startsWith("--");
+  // `#` is a Python/Ruby comment — except a C function-like macro, which the
+  // macro rule needs to see. `#define NAME(` can't occur in a prose comment
+  // because the paren must touch the name (the preprocessor's own rule).
+  if (t.startsWith("#")) return !/^#\s*define\s+[A-Za-z_]\w*\(/.test(t);
+  return t.startsWith("//") || t.startsWith("*") || t.startsWith("/*") || t.startsWith("--");
 }
 
 export function extractSymbols(source: string, maxSymbols = 2000): SymbolDef[] {

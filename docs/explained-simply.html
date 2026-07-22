@@ -520,9 +520,16 @@ TOTAL         9 calls  3111</samp>
       unrelated things share a name, both show up. It's a strong lead, not proof.
     </p>
     <p>
-      The relationship diagram <strong>doesn't work on Apex</strong>, because
-      Apex files don't import each other the way JavaScript files do. There's
-      simply no graph to draw. On Apex, “who uses this?” does that job instead.
+      The relationship diagram <strong>no longer needs import statements</strong>.
+      Some languages never import each other the way JavaScript files do, so
+      their map used to come back empty; today the catalog notices when one
+      file's code mentions another file's class by name (ignoring comments and
+      quoted text) and draws that as a connection — “which class implements
+      this interface” and “which trigger uses this handler” both fall out of
+      it. It also reads the configuration files in your project: a settings
+      record that names a class becomes a connection too, so “what wires this
+      up” gets an answer. The only thing it can't draw is a setting that lives
+      purely in a running system and was never saved into the project.
     </p>
     <div class="aside">
       <strong>And one thing it will never do:</strong> send your code anywhere.
@@ -535,8 +542,8 @@ TOTAL         9 calls  3111</samp>
 <footer>
   <p>
     CodeGlance (codeglance-mcp) v0.8.0 · MIT © 2026 Kael VK Inc. · Examples on
-    this page are real output captured from the running server against the Apex
-    Capital Hub project.
+    this page are real output captured from the running server against a sample
+    project.
   </p>
 </footer>
 
