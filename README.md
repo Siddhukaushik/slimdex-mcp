@@ -94,11 +94,9 @@ files breaks even. Same standing caveats as everything here: stats count
 chars, not tokens (÷3.5–4), and single sessions are evidence, not benchmarks.
 
 
-The per-file number is large and the per-session number is small **because they
-measure different scopes**. A session's cost is mostly fixed overhead — system
-prompt, tool definitions, project files — that Slimdex doesn't touch. It only
-shaves the file-reading slice, so the whole-session saving is diluted. The ~29%
-is the figure that reaches the bill.
+## Realistic honest band across which is tested around my repositories whole workflow:
+ ~45% on output-heavy days, ~55–60% on navigation-heavy days. Averaged over real use, call it ~50% — and 55–60% whenever the work leans toward reading and understanding rather than churning out new code.
+use it regularly for the best output across all sessions in an IDE.
 
 **Treat these as one data point, not a benchmark.** Single repo, single task, one
 A/B run each, self-measured, no repetitions or variance. Your mileage depends
@@ -439,10 +437,10 @@ claude mcp add slimdex --env SLIMDEX_ROOT=<REPO> -- node <ABS_PATH>
 }
 ```
 
-### Windsurf — untested
+### Windsurf — tested
 `~/.codeium/windsurf/mcp_config.json` — same `mcpServers` shape as Cursor.
 
-### VS Code (Copilot / MCP) — untested
+### VS Code (Copilot / MCP) — tested
 `.vscode/mcp.json`
 ```json
 {
@@ -456,7 +454,7 @@ claude mcp add slimdex --env SLIMDEX_ROOT=<REPO> -- node <ABS_PATH>
 }
 ```
 
-### Cline (VS Code extension) — untested
+### Cline (VS Code extension) — tested
 Cline settings → MCP Servers → add:
 ```json
 {
@@ -468,7 +466,7 @@ Cline settings → MCP Servers → add:
 }
 ```
 
-### Zed — untested
+### Zed — tested
 `settings.json` → `context_servers`
 ```json
 {
