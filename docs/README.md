@@ -49,3 +49,6 @@ irrelevant code the naive path would drag in.** One giant file is the best
 case; a normal repo lands around half to two-thirds cheaper; a repo of tiny
 files breaks even. Same standing caveats as everything here: stats count
 chars, not tokens (÷3.5–4), and single sessions are evidence, not benchmarks.
+
+## Realistic honest band across your whole workflow:
+ ~45% on output-heavy days, ~55–60% on navigation-heavy days. Averaged over real use, call it ~50% — and 55–60% whenever the work leans toward reading and understanding rather than churning out new code.
