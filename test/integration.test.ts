@@ -257,6 +257,22 @@ describe.skipIf(!built)("MCP server end to end", () => {
     expect(out).toMatch(/src\/math\.ts:\d+/);
   });
 
+  it("context_pack assembles ranked symbols, connections and bodies in one call", async () => {
+    const out = await call("context_pack", { query: "add numbers calculator" });
+    expect(out).toContain("Context pack for");
+    expect(out).toContain("Relevant symbols");
+    expect(out).toContain("add");
+    expect(out).toContain("Key bodies:");
+  });
+
+  it("digest_save then digest_get round-trips with a freshness verdict", async () => {
+    await call("digest_save", { text: "Calculator app: math.ts adds, app.ts wraps it.", covers: ["src"] });
+    const out = await call("digest_get");
+    expect(out).toContain("Architecture digest");
+    expect(out).toContain("math.ts adds");
+    expect(out).toMatch(/✓|⚠/); // a freshness verdict is present
+  });
+
   it("replace_symbol overwrites a body by name, snapshots first, re-indexes", async () => {
     const out = await call("replace_symbol", {
       name: "unused",

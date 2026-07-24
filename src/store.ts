@@ -124,3 +124,30 @@ export async function saveMemory(root: string, mem: MemoryStore): Promise<void> 
   await ensureDir(root);
   await fs.writeFile(path.join(dir(root), "memory.json"), JSON.stringify(mem, null, 2), "utf8");
 }
+
+// The architecture digest: one compact, agent-authored "how this repo works"
+// note, so a future session reads a page instead of re-exploring the code. Kept
+// separate from memory (which is many small facts) because it's a single living
+// document with its own freshness lifecycle.
+export interface DigestStore {
+  version: 1;
+  text: string;
+  covers: string[]; // repo-relative paths/prefixes this digest summarizes (empty = whole repo)
+  savedAt: string; // ISO; freshness is measured against this
+}
+
+export async function loadDigest(root: string): Promise<DigestStore | null> {
+  try {
+    const raw = await fs.readFile(path.join(dir(root), "digest.json"), "utf8");
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.version === 1 && typeof parsed.text === "string") return parsed as DigestStore;
+  } catch {
+    /* none yet */
+  }
+  return null;
+}
+
+export async function saveDigest(root: string, digest: DigestStore): Promise<void> {
+  await ensureDir(root);
+  await fs.writeFile(path.join(dir(root), "digest.json"), JSON.stringify(digest, null, 2), "utf8");
+}

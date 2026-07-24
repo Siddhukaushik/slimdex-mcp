@@ -76,5 +76,5 @@ gap is the honest part — a session is mostly fixed overhead Slimdex never
 touches, so it only shaves the file-reading slice. One repo, one A/B run,
 self-measured: directional, not a benchmark.
 
-208 unit and integration tests across 21 files, CI on Ubuntu + Windows across
+224 unit and integration tests across 23 files, CI on Ubuntu + Windows across
 Node 20/22, and zero network calls in `src/` — verifiable with one grep.

@@ -23,6 +23,12 @@ const CODE_EXT = new Set([
   // Apex. Syntactically Java-like, so the existing Java/C# rules find its
   // classes and methods without needing rules of their own.
   ".cls", ".trigger",
+  // Markup and styles. These carry few or no code symbols (verified: CSS → 0,
+  // SCSS surfaces only real `@function` decls, HTML only inline <script> funcs —
+  // no junk), but indexing them makes them searchable/readable through slimdex,
+  // which frontend and LWC repos (HTML templates + CSS/SCSS alongside JS/Apex)
+  // genuinely need. read_lines / search_code / get_file_skeleton then work on them.
+  ".css", ".scss", ".less", ".html", ".htm",
 ]);
 
 const MAX_FILE_BYTES = 1_500_000; // skip anything larger; almost certainly generated

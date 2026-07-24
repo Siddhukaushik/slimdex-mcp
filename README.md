@@ -20,6 +20,7 @@ list, rather than loading a file to find one thing.
 | `find_definition` | Definition site(s) of a symbol as `path:line:col` |
 | `search_symbols` | Fuzzy symbol-name lookup, ranked exact→prefix→substring→subsequence |
 | `search_intent` | Natural-language query ranked over symbols by BM25 (no embeddings) — find code by what it does |
+| `context_pack` | One call: ranks a topic's symbols, shows how they connect, and bundles the top bodies under a budget — the whole exploration in one round-trip |
 | `find_references` | Textual references as `path:line:col` + enclosing function |
 | `find_tests` | Of the references to a symbol, which live in test files — or a warning that none do |
 | `replace_symbol` | Overwrite a symbol's body addressed by name (no re-sent old code); snapshots first, re-indexes after |
@@ -31,6 +32,7 @@ list, rather than loading a file to find one thing.
 | `batch` | Runs several calls in one request |
 | `recap` | Prior sessions' activity, reconstructed automatically from the server's tool-call journal — works even when nothing was saved |
 | `brief` | One-shot session opener: repo summary + journal-derived focus + saved conclusions checked against the live index (✓ live / ⚠ maybe stale) |
+| `digest_save` / `digest_get` | Store a compact repo architecture cheat-sheet once; read it back with a per-covered-file freshness verdict, so the next session skips re-exploring |
 | `snapshot` | Copies uncommitted files into `.slimdex/snapshots/` (also auto-runs hourly via `index_repo` on a dirty tree) — insurance against accidental resets, not a substitute for committing |
 | `memory_save/search/list/delete` | Durable notes in `.slimdex/memory.json` |
 
@@ -43,7 +45,11 @@ clients inject it into the model's context automatically.
 repo is, where recent sessions were digging, and which saved conclusions still
 match the code (stale ones flagged), so a fresh chat starts informed instead of
 blank. Then `get_context("Foo")` to answer "what is this, who calls it, what does
-it depend on" in one response. Don't know the name, only what it does? —
+it depend on" in one response. To understand a whole *area* rather than one
+symbol, `context_pack("how does auth work")` runs the entire exploration
+server-side and hands back a single bounded bundle — the relevant symbols, how
+they connect, and the top bodies — so you spend one call and one transcript
+entry instead of ten. Don't know the name, only what it does? —
 `search_intent("parse the config file")` ranks symbols by intent with BM25, no
 embeddings. Drop to `get_symbol_context` for one body (it flags itself if the file
 drifted from the index, so you don't re-read to check), `get_file_skeleton` for a
@@ -138,7 +144,7 @@ instructed to use only Slimdex and one instructed to avoid it, and compare
 
 Being explicit, since the rest of this README is easy to over-read.
 
-**Covered by the unit suite** (`npm test` runs 208 tests across 21 files):
+**Covered by the unit suite** (`npm test` runs 224 tests across 23 files):
 
 - Symbol extraction across JS/TS (incl. class and object-literal methods),
   Python, Go, Rust, Java/C#, and comment skipping — `symbols.test.ts`
@@ -186,13 +192,20 @@ Being explicit, since the rest of this README is easy to over-read.
 - Freshness: a file newer than its indexed mtime reads as stale (line numbers may
   be off), a matching mtime reads as fresh, and a missing file never cries stale —
   `freshness.test.ts`
+- `context_pack` assembly: header + ranked symbols + bodies in one bundle, the
+  no-match message, char-budget gating that still guarantees the first body, and
+  the symbols-limit cap — `pack.test.ts`
+- The architecture digest: covered files modified after the digest read as stale,
+  a newer digest reads clean, coverage-scope and directory-prefix filtering, and
+  the rendered fresh/stale verdict — `digest.test.ts`
 
 **Covered end to end, through the real MCP server** (`integration.test.ts` spawns
 the server over stdio against a temporary fixture repo and asserts on output):
 `index_repo`, `repo_map`, `read_lines`, `get_file_skeleton`, `outline_file`,
 `get_symbol_context`, `find_definition`, `find_references`, `find_tests` (the hit
-and the no-coverage warning), `search_intent` (intent ranking), `get_context`
-(including its `maxChars` cap),
+and the no-coverage warning), `search_intent` (intent ranking), `context_pack` (one-call
+bundle), `digest_save`/`digest_get` (round trip with freshness verdict),
+`get_context` (including its `maxChars` cap),
 `dep_graph` (imports + mermaid), `batch`, `search_code`, `search_symbols`,
 `stats`, `brief`, `replace_symbol` (write-then-query round trip and the
 unknown-symbol refusal), the `memory_save/search/list/delete` round trip, the

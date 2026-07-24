@@ -164,6 +164,27 @@ search_intent(query: "validate a user email")
   src/user.ts:12   method   checkUserAddress (0.91)
 ```
 
+### `context_pack`
+
+**Technical:** Runs a whole exploration server-side and returns one bounded
+bundle: BM25-ranks the symbols relevant to a natural-language query, renders one
+hop of the import graph for the files involved, and includes the top few bodies
+under a char `budget`. Deterministic — no LLM — assembled from `search_intent` +
+the graph + `get_symbol_context`.
+
+**Plain words:** "Get me everything I need to understand X, in one shot." Instead
+of ten little questions (each a round-trip, and each answer then cluttering the
+chat for the rest of the session), it's one question and one tidy answer. Like
+sending one shopper with a list instead of ten separate trips.
+
+```
+context_pack(query: "how does the index cache work", budget: 6000)
+→ Context pack for "how does the index cache work" — 6 relevant symbol(s)…
+    Relevant symbols (ranked by intent): loadIndex, saveIndex, indexCache …
+    How they connect (import graph, one hop): store.ts used by index.ts, indexer.ts
+    Key bodies: [loadIndex body] [saveIndex body] …
+```
+
 ### `find_definition`
 
 **Technical:** Exact-name lookup in the index → definition site(s) as
@@ -347,6 +368,30 @@ brief()
     Saved conclusions (checked against the current index):
       [39b8fc15] ✓ (graph) nameRefEdges also walks repo XML …
       [aa01] ⚠ the fix lives in oldHelper()  (stale? mentions oldHelper …)
+```
+
+### `digest_save` / `digest_get`
+
+**Technical:** Stores one agent-authored "how this repo works" document at
+`.slimdex/digest.json` with a `covers` list of the paths it summarizes.
+`digest_get` returns it plus a freshness verdict — each covered file is stat'd
+against the digest's save time, and any modified since are flagged as reasons it
+may be out of date (same mtime signal as `get_symbol_context`'s self-check).
+
+**Plain words:** A one-page cheat-sheet about the whole project, kept up to date.
+Write it once when you understand the shape; every future session reads the page
+instead of re-reading piles of code to relearn how things fit — and it tells you
+when the page has gone stale. Like an onboarding note for new hires that never
+rots silently.
+
+```
+digest_save(text: "Retrieval flows through index.ts → intel.ts …", covers: ["src"])
+→ Saved architecture digest (412 chars, covers: src).
+
+digest_get()
+→ Architecture digest (saved 2026-07-24, covers: src)
+  ✓ all covered files unchanged since it was written — safe to rely on.
+  Retrieval flows through index.ts → intel.ts …
 ```
 
 ### `memory_save`
