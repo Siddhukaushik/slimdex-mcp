@@ -190,6 +190,19 @@ describe.skipIf(!built)("MCP server end to end", () => {
     expect(out).toMatch(/:\d+:\d+/);
   });
 
+  it("search_code hints regex mode when an alternation pattern matches nothing literally", async () => {
+    // `add|helper` as a LITERAL matches nothing (the pipe isn't in the source),
+    // even though both names exist — the exact trap that sent a field session to grep.
+    const out = await call("search_code", { pattern: "add|helper" });
+    expect(out).toMatch(/0 of 0|0\/0/);
+    expect(out).toMatch(/regex mode is OFF|regex:true/);
+  });
+
+  it("search_code hints re-indexing when a plain term genuinely isn't found", async () => {
+    const out = await call("search_code", { pattern: "zzz_no_such_term_zzz" });
+    expect(out).toMatch(/indexed file|index_repo/);
+  });
+
   it("search_symbols finds a Python declaration", async () => {
     const out = await call("search_symbols", { query: "helper" });
     expect(out).toContain("lib/util.py");
