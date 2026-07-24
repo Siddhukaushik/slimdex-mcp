@@ -68,6 +68,23 @@ export async function journalRecord(root: string, tool: string, args: unknown): 
   timer.unref?.();
 }
 
+// Provenance for memory_save: the last few distinct hints the agent left in the
+// journal, as a compact one-liner. Answers "what was on screen when this
+// conclusion was reached" without the agent having to state it. Best-effort.
+export async function recentHints(root: string, n = 8): Promise<string> {
+  try {
+    const data = await load(root);
+    const seen: string[] = [];
+    for (let i = data.entries.length - 1; i >= 0 && seen.length < n; i--) {
+      const h = data.entries[i].hint;
+      if (h && !seen.includes(h)) seen.push(h);
+    }
+    return seen.reverse().join(", ");
+  } catch {
+    return "";
+  }
+}
+
 // Exposed so tests (and shutdown paths) can force the debounced write.
 export async function flushJournal(root: string): Promise<void> {
   if (!cache || cache.root !== root) return;

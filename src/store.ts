@@ -35,6 +35,10 @@ export interface MemoryFact {
   text: string;
   tags: string[];
   created: string;
+  // Decision provenance: a compact note of what the agent was looking at when
+  // this conclusion was saved, pulled from the journal. Optional so older facts
+  // (and any client that doesn't populate it) round-trip unchanged.
+  context?: string;
 }
 
 export interface MemoryStore {

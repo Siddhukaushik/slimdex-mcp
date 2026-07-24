@@ -9,12 +9,16 @@ Return the answer, not the haystack. Never read a whole file when a narrower too
 answers the question. But when you genuinely can't be sure without more context,
 get it — a wrong edit is more expensive than any read.
 
-## Session start (always, first, one batch call)
+## Session start (always, first)
 ```
-batch: [ memory_list, recap, index_repo ]
+index_repo    then    brief
 ```
-- `memory_list` — what past sessions concluded. `recap` — where they looked.
-- `index_repo` — refresh the index; re-run after edits or a branch switch.
+- `brief` — the one-shot opener: repo summary + where recent sessions were digging
+  (from the automatic journal) + every saved conclusion CHECKED against the current
+  index (✓ still live / ⚠ maybe stale). It folds `memory_list` + `recap` together.
+- Drop to `batch: [ memory_list, recap ]` only for the raw, unsynthesized lists.
+- `index_repo` first so `brief`'s staleness check runs against fresh symbols;
+  re-run it after edits or a branch switch.
 - On a dirty tree, also `changed_files` — the diff's symbols, not the patch.
 
 ## Question → tool (never a file read)
@@ -23,13 +27,16 @@ batch: [ memory_list, recap, index_repo ]
 | Where is the code / what's this repo? | `repo_map` (then `repo_map path:"dir"`) |
 | What's in this file? | `get_file_skeleton` (or `outline_file`) |
 | Where is symbol X defined? | `find_definition` / fuzzy: `search_symbols` |
+| Know what it does, not its name? | `search_intent` (BM25, no embeddings) |
 | What is X, who calls it, what does it use? | `get_context` (one call, not four) |
 | Body of X (or X, Y, Z)? | `get_symbol_context names:[...]` (up to 10) |
 | Exact lines 40–80? | `read_lines` |
 | Who uses X? | `find_references` (+ `pathPrefix`) |
+| Which tests cover X? | `find_tests` (run those, or note X is untested) |
 | Where does this string appear? | `search_code` (real text only) |
 | What changed in the tree? | `changed_files` |
 | What imports/depends on this file? | `dep_graph` |
+| Rewrite a whole function/class? | `replace_symbol name:"X" body:"…"` (write) |
 
 Symbol-shaped questions → the symbol tools. Reserve `search_code` for genuine text
 hunts; scope with `pathPrefix` when you know the area.
@@ -52,11 +59,18 @@ Full-read is allowed only when a block truly can't be disambiguated otherwise �
 rare, not routine.
 
 ## Editing code
-Narrow read → narrow edit. Never rewrite a whole file to change a few lines; output
-costs far more than input. Get exact anchors from `read_lines`, patch with small
-`Edit`/`apply_patch` hunks. Before touching a shared module, `dep_graph
-mode:"mermaid" root:"<file>"` for blast radius; `find_references` (scoped) for every
-caller to update. Match reasoning effort to the task.
+Narrow read → narrow edit. Output costs ~4-5x input, so this is where tokens actually
+leak — attack it, don't just optimize reads.
+- **Whole function/class/method?** → `replace_symbol name:"X" body:"…"`. You emit
+  only the new body; you do NOT re-send the old code for a matcher to locate — slimdex
+  has X's range from the index. It snapshots first and re-indexes after, and reports
+  the new line span so you don't re-read to verify.
+- **A few lines inside a symbol?** → `read_lines` the exact span, patch with a small
+  `Edit`/`apply_patch` hunk. Never rewrite a whole file for a few lines.
+- **Before editing X** → `find_tests X`: run exactly the tests that cover it, or see
+  that none do and treat that as risk. Before touching a shared module, `dep_graph
+  mode:"mermaid" root:"<file>"` for blast radius; `find_references` (scoped) for every
+  caller to update. Match reasoning effort to the task.
 
 ## Writing new code
 Skeleton the target file + 1–2 siblings to match idiom — don't full-read the module.
@@ -75,6 +89,9 @@ break an internal caller. Call a rough edge a rough edge, not a vulnerability.
 decisions + WHY, constraints, gotchas, half-done work, next steps. `memory_search`
 before saving; `memory_delete` what's wrong. Don't save what the index or git
 already knows. Sessions have no end signal — unsaved = lost.
+- Provenance is automatic: `memory_save` records what you were just looking at, so a
+  saved decision carries its evidence trail. Name the symbols/files in the text too —
+  `brief` staleness-checks those mentions and flags the note if they've since vanished.
 
 ## Session hygiene
 Finish a chunk → save to memory → start a fresh chat (don't run marathons; history
@@ -88,10 +105,18 @@ Search tools: small `limit` first, page with `offset`/cursor. `get_context`:
 `include` opt-in (add `body`/`dependents` only when needed). `get_symbol_context`:
 `maxLines`. Always `pathPrefix` when you know the area.
 
+## Freshness (trust a result without re-reading)
+`get_symbol_context` appends a ⚠ line only when the file changed since it was
+indexed — the located line may be off, so `index_repo` then retry. Silent when
+fresh. `brief` reports the repo-wide count. No warning = the line numbers are good;
+don't spend a re-read to check.
+
 ## What slimdex is NOT
 Extraction is regex-heuristic (~96%) — a miss costs one `search_code` fallback.
-`find_references` is textual (same-named strangers appear). The server never sees
-the conversation. On a repo of tiny files, plain reads are fine — no ceremony.
+`find_references`/`find_tests` are textual (same-named strangers appear).
+`search_intent` is lexical BM25, not embeddings — it ranks by shared name-words, so
+it won't bridge pure synonyms with no token overlap. The server never sees the
+conversation. On a repo of tiny files, plain reads are fine — no ceremony.
 
 ## Self-audit (run `stats`)
 Started with memory+recap+index? follow-through M ≥ N? Any avoidable full read? Any
@@ -100,8 +125,9 @@ Session long enough to reset?
 
 ## Safety / meta tools (infrastructure, not token savers)
 - `snapshot` — copies uncommitted files to `.slimdex/snapshots/`; also auto-runs
-  (hourly, dirty tree) via `index_repo`. Undo buffer for a stray `git checkout .`;
-  a pushed commit is the only real backup.
+  (hourly, dirty tree) via `index_repo`, and once per `replace_symbol` before it
+  writes. Undo buffer for a stray `git checkout .` or a bad edit; a pushed commit is
+  the only real backup.
 - `stats` — the meter: shows the follow-through line and char totals. Run it to
   check discipline, not to explore.
 - `outline_file` — flat symbol list (lighter than `get_file_skeleton`).
