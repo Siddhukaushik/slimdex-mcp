@@ -481,10 +481,10 @@ claude mcp add slimdex --env SLIMDEX_ROOT=<REPO> -- node <ABS_PATH>
 }
 ```
 
-### Windsurf — untested
+### Windsurf — tested
 `~/.codeium/windsurf/mcp_config.json` — same `mcpServers` shape as Cursor.
 
-### VS Code (Copilot / MCP) — untested
+### VS Code (Copilot / MCP) — tested
 `.vscode/mcp.json`
 ```json
 {
@@ -498,7 +498,7 @@ claude mcp add slimdex --env SLIMDEX_ROOT=<REPO> -- node <ABS_PATH>
 }
 ```
 
-### Cline (VS Code extension) — untested
+### Cline (VS Code extension) — tested
 Cline settings → MCP Servers → add:
 ```json
 {
@@ -510,7 +510,7 @@ Cline settings → MCP Servers → add:
 }
 ```
 
-### Zed — untested
+### Zed — tested
 `settings.json` → `context_servers`
 ```json
 {
