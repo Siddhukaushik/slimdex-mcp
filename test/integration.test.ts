@@ -274,6 +274,11 @@ describe.skipIf(!built)("MCP server end to end", () => {
     expect(out).toMatch(/No definition indexed/i);
   });
 
+  it("replace_symbol refuses a path outside the repo root", async () => {
+    const out = await call("replace_symbol", { path: "../../../etc/hosts", line: 1, body: "x" });
+    expect(out.toLowerCase()).toMatch(/escapes project root|cannot resolve/);
+  });
+
   // ---- error handling ----
 
   it("rejects a path outside the repo root instead of reading it", async () => {

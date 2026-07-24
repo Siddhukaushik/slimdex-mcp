@@ -24,6 +24,11 @@ export interface SpliceResult {
 export function spliceSymbol(source: string, defLine: number, newBody: string): SpliceResult {
   const eol: "\n" | "\r\n" = /\r\n/.test(source) ? "\r\n" : "\n";
   const lines = source.split(/\r?\n/);
+  // Fail fast on a defLine past EOF (e.g. a stale index): otherwise extractBlock
+  // returns an empty {start:defLine,end:defLine} and we'd silently append the
+  // body at the wrong place. A wrong write is worse than a refused one.
+  if (defLine < 1 || defLine > lines.length)
+    throw new Error(`defLine ${defLine} is out of range for this file (${lines.length} line(s)) — re-run index_repo`);
   const block = extractBlock(lines, defLine);
   const newLines = newBody.split(/\r?\n/);
   const before = lines.slice(0, block.start - 1);

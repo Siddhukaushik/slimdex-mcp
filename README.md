@@ -106,11 +106,23 @@ files breaks even. Same standing caveats as everything here: stats count
 chars, not tokens (÷3.5–4), and single sessions are evidence, not benchmarks.
 
 
-The per-file number is large and the per-session number is small **because they
-measure different scopes**. A session's cost is mostly fixed overhead — system
-prompt, tool definitions, project files — that Slimdex doesn't touch. It only
-shaves the file-reading slice, so the whole-session saving is diluted. The ~29%
-is the figure that reaches the bill.
+### The realistic whole-workflow band
+
+The figures above are single-scenario *exploration* numbers — the best case,
+where the naive path would have dragged in the most irrelevant code. Averaged
+across a whole real workday, not just the exploration slice, the band settles
+lower:
+
+- **~55–60%** on navigation-heavy work — reading and understanding a codebase,
+  where narrow retrieval replaces whole-file reads most often.
+- **~45%** on output-heavy work — churning out new code, where more of the cost
+  is generation the server doesn't touch (though `replace_symbol` now shaves the
+  write side too).
+- **~50% averaged** over regular day-to-day use. The saving compounds the more
+  sessions run through it, because `brief` and memory mean each new chat starts
+  informed instead of re-deriving the repo from zero.
+
+Use it regularly across sessions in your IDE for the best of this.
 
 **Treat these as one data point, not a benchmark.** Single repo, single task, one
 A/B run each, self-measured, no repetitions or variance. Your mileage depends
