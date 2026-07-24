@@ -49,6 +49,14 @@ const FILES: Record<string, string> = {
     "export const HELP = `call function ghost() or class Phantom {`;",
   ].join("\n"),
   "lib/util.py": ["def helper(x):", "    return x * 2", "", "class Box:", "    def open(self):", "        return 1"].join("\n"),
+  "test/math.test.ts": [
+    'import { add } from "../src/math.js";',
+    'describe("arithmetic", () => {',
+    '  it("sums two numbers", () => {',
+    "    expect(add(1, 2)).toBe(3);",
+    "  });",
+    "});",
+  ].join("\n"),
 };
 
 beforeAll(async () => {
@@ -223,6 +231,47 @@ describe.skipIf(!built)("MCP server end to end", () => {
     await call("get_file_skeleton", { path: "src/math.ts" });
     const out = await call("stats");
     expect(out).toMatch(/follow-through: \d+ skeleton/);
+  });
+
+  // ---- test linkage, onboarding brief, and the write side ----
+
+  it("find_tests points to the test that exercises a symbol", async () => {
+    const out = await call("find_tests", { name: "add" });
+    expect(out).toContain("test/math.test.ts");
+  });
+
+  it("find_tests flags a symbol with no test coverage", async () => {
+    const out = await call("find_tests", { name: "unused" });
+    expect(out).toMatch(/No tests reference/i);
+  });
+
+  it("brief synthesizes a repo summary and checks memory against the index", async () => {
+    const out = await call("brief");
+    expect(out).toContain("Onboarding brief");
+    expect(out).toMatch(/indexed file|symbol/);
+  });
+
+  it("search_intent ranks a symbol by natural-language intent", async () => {
+    const out = await call("search_intent", { query: "add two numbers" });
+    expect(out).toContain("add");
+    expect(out).toMatch(/src\/math\.ts:\d+/);
+  });
+
+  it("replace_symbol overwrites a body by name, snapshots first, re-indexes", async () => {
+    const out = await call("replace_symbol", {
+      name: "unused",
+      body: 'export function unused(): string {\n  return "now used";\n}',
+    });
+    expect(out).toMatch(/Replaced/);
+    expect(out).toMatch(/snapshot saved/);
+    // the new body is really on disk and immediately queryable via the index
+    const body = await call("get_symbol_context", { name: "unused" });
+    expect(body).toContain('return "now used"');
+  });
+
+  it("replace_symbol refuses an unknown symbol instead of writing", async () => {
+    const out = await call("replace_symbol", { name: "noSuchSymbol", body: "x" });
+    expect(out).toMatch(/No definition indexed/i);
   });
 
   // ---- error handling ----

@@ -26,8 +26,13 @@ import { changedFiles, formatChanged, isGitRepo } from "./git.js";
 import { loadStats, formatStats, record, resetStats } from "./stats.js";
 import { loadIndex, loadMemory, saveMemory, type MemoryFact } from "./store.js";
 import { readFileCached } from "./fscache.js";
-import { journalRecord, formatRecap } from "./journal.js";
+import { journalRecord, formatRecap, recentHints } from "./journal.js";
 import { takeSnapshot, newestSnapshotAgeMs } from "./snapshot.js";
+import { isTestFile } from "./testlink.js";
+import { spliceSymbol } from "./edit.js";
+import { composeBrief } from "./brief.js";
+import { rankIntent } from "./intent.js";
+import { isStale, stalenessNote } from "./freshness.js";
 import { TERSE, t, fileHeader, countNotice, truncNotice } from "./terse.js";
 
 const ROOT = path.resolve(process.env.SLIMDEX_ROOT || process.argv[2] || process.cwd());
@@ -58,7 +63,9 @@ const INSTRUCTIONS = `slimdex replaces "read the whole file" with narrow retriev
    was about to pay; the skeleton told you where everything is, so read only that.
 4. For anything symbol-shaped use find_definition / find_references / get_symbol_context, not search_code.
    Plain text search on a large codebase returns same-named identifiers from unrelated files.
-   Reserve search_code for real string/text searches.
+   Reserve search_code for real string/text searches. When you know WHAT the code does but not its
+   name, use search_intent (BM25 over symbol names — 'validate email' → validateEmail) instead of
+   guessing search_code patterns.
 5. Prefer one get_context(name, include:[...]) over chaining find_definition + find_references + dep_graph.
 6. Scope search_code and find_references with pathPrefix when you already know the rough area.
 7. Before refactoring a shared module, run dep_graph mode:"mermaid" root:"<file>" to see the blast radius.
@@ -68,11 +75,11 @@ const INSTRUCTIONS = `slimdex replaces "read the whole file" with narrow retriev
 
 MEMORY — this is what makes a new chat start informed instead of blank:
 
-10. FIRST action in a new session, before exploring: memory_list AND recap, in one batch call.
-    memory_list returns what earlier chats chose to save; recap is reconstructed automatically from
-    the server's tool-call journal, so it works even when the previous session saved nothing — it
-    shows which files and symbols past sessions were digging into. Two cheap calls that routinely
-    save re-deriving what a past session already worked out.
+10. FIRST action in a new session, before exploring: call brief. It is the one-shot opener —
+    repo summary + where recent sessions were digging (from the automatic journal) + every saved
+    conclusion CHECKED against the current index, so stale notes are flagged (✓ live / ⚠ maybe stale)
+    instead of trusted blindly. It folds memory_list + recap together; drop to those two (in one
+    batch call) only when you want the raw, unsynthesized lists.
 11. memory_save anything durable the moment you learn it — an architectural decision and WHY, a
     non-obvious constraint, a gotcha that cost you time, where a surprising thing lives, a convention
     the code implies but never states. Tag it so memory_search finds it later.
@@ -83,7 +90,18 @@ MEMORY — this is what makes a new chat start informed instead of blank:
 12. Do NOT save what the code already says. A symbol's location is what the index is for; re-run
     index_repo instead. Memory is for the things reading the code cannot tell you.
 13. Correct rather than duplicate: memory_search before saving, and memory_delete facts that turn out
-    to be wrong. A store full of stale or repeated notes is worse than an empty one.`;
+    to be wrong. A store full of stale or repeated notes is worse than an empty one.
+
+EDITING — the output side, where tokens actually cost the most (≈4-5x input):
+
+14. Before you change a symbol, run find_tests on it. It tells you which tests exercise it — run
+    exactly those instead of the whole suite, or SEE that nothing covers it and treat that as risk
+    before editing, not after.
+15. To rewrite a whole function/class/method, use replace_symbol name:"X" body:"..." — do NOT re-send
+    the old code just so an edit tool can locate the change. slimdex already knows where X is; you emit
+    only the new body. The file is snapshotted first and re-indexed after, and the response reports the
+    new line span so you don't re-read to verify. Patch the symbols you pulled; never re-emit a whole
+    file to change a few lines.`;
 
 // ---------------------------------------------------------------------------
 // Handler registry. Each handler returns a plain string. Registering through
@@ -377,6 +395,72 @@ tool(
 );
 
 tool(
+  "find_tests",
+  {
+    title: "Which tests exercise a symbol",
+    description:
+      "The regression-coverage question dep_graph can't answer: of everything that references a symbol, which references " +
+      "live in TEST files. Answers 'if I change calculateTax, which tests will catch a break' — run exactly those instead " +
+      "of the whole suite. If NOTHING tests it, that's surfaced as a risk before you edit, not discovered after. A file " +
+      "counts as a test by path convention (*.test.*, *.spec.*, __tests__/, test_*.py, *_test.go …) or by containing an " +
+      "indexed describe/it/test title. Textual like find_references, so same honest caveat: same-named identifiers can slip in.",
+    inputSchema: {
+      name: z.string(),
+      pathPrefix: z.string().optional(),
+      limit: z.number().int().min(1).max(1000).optional(),
+    },
+  },
+  async ({ name, pathPrefix, limit }) => {
+    const index = await loadIndex(ROOT);
+    let files = Object.keys(index.files);
+    if (pathPrefix) files = files.filter((f) => f.startsWith(toPosix(pathPrefix)));
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const lim = limit ?? 50;
+    const { matches } = await searchFiles(ROOT, files, `\\b${escaped}\\b`, {
+      regex: true,
+      maxMatches: 500, // scan wide, then filter to tests
+      literalHint: name,
+    });
+    const hits = matches
+      .map((m) => ({ m, enc: enclosingSymbol(index.files[m.file], m.line) }))
+      .filter(({ m, enc }) => isTestFile(m.file) || enc?.kind === "test")
+      .slice(0, lim);
+    if (hits.length === 0) {
+      return (
+        `⚠ No tests reference "${name}". Changing it has no regression coverage in this repo — ` +
+        `add a test, or proceed knowing nothing will catch a break.`
+      );
+    }
+    const rows = hits.map(({ m, enc }) => `  ${m.file}:${m.line}${enc ? `  in ${enc.kind} ${enc.name}` : ""}`);
+    return `${hits.length} test reference(s) to "${name}" — run these before changing it:\n${rows.join("\n")}`;
+  }
+);
+
+tool(
+  "search_intent",
+  {
+    title: "Find code by intent (BM25, no embeddings)",
+    description:
+      "When you know WHAT the code does but not its name: a natural-language query ranked against every indexed symbol " +
+      "by BM25 over tokenized names (camelCase/snake_case split), kinds and filenames — so 'validate user email' surfaces " +
+      "validateEmail / emailValidator / checkUserAddress. The featherweight answer to semantic search: no embeddings, no " +
+      "model, no extra index to keep fresh — instant and offline, and the scores are explainable, not an opaque cosine. " +
+      "For an exact/partial name use search_symbols; for a literal string use search_code; this is for 'the thing that…'.",
+    inputSchema: {
+      query: z.string().describe("What the code does, in words — 'parse the config file', 'retry a failed request'."),
+      limit: z.number().int().min(1).max(50).optional().describe("Top matches to return (default 10)."),
+    },
+  },
+  async ({ query, limit }) => {
+    const index = await loadIndex(ROOT);
+    const hits = rankIntent(index, query, limit ?? 10);
+    if (!hits.length) return `No symbol matched the intent "${query}". Try different words, or search_code for a literal string.`;
+    const rows = hits.map((h) => `  ${h.file}:${h.line}  ${h.kind} ${h.name}  (${h.score.toFixed(2)})`);
+    return `Ranked by intent for "${query}" (BM25 score):\n${rows.join("\n")}`;
+  }
+);
+
+tool(
   "get_symbol_context",
   {
     title: "Surgical symbol snippet(s)",
@@ -433,7 +517,10 @@ tool(
       const ctx = await getSymbolContext(
         ROOT, file, defLine, kind, before ?? 2, after ?? 2, maxLines ?? 200, siblings[0]
       );
-      return `${ctx.file}:${ctx.line}  ${ctx.kind}  (${ctx.loc} LOC)\n${ctx.text}`;
+      // Self-verifying: warn (only) when this file changed since indexing, so
+      // the agent knows the located line may be off without re-reading to check.
+      const fresh = await stalenessNote(ROOT, file, index.files[file]?.mtimeMs ?? Infinity);
+      return `${ctx.file}:${ctx.line}  ${ctx.kind}  (${ctx.loc} LOC)\n${ctx.text}${fresh}`;
     };
 
     // Several bodies in one round-trip. A miss or an ambiguity reports inline
@@ -444,6 +531,76 @@ tool(
       return parts.join("\n\n");
     }
     return one(name, p, line);
+  }
+);
+
+// ---- the write side: attack OUTPUT tokens, not just input ----
+tool(
+  "replace_symbol",
+  {
+    title: "Replace a symbol's body by name (write)",
+    description:
+      "Overwrite the full definition of a symbol (function/class/method) with new code, addressed by NAME — you never " +
+      "re-send the old body just to locate the edit, which is where output tokens (≈4-5x input) leak on every change. " +
+      "The symbol's line range comes from the index; the file is SNAPSHOTTED first (rollback under .slimdex/snapshots), " +
+      "then re-indexed, and the response reports the new line span so you don't re-read to verify. Ambiguous or unknown " +
+      "names are refused, never guessed. `body` must be the complete replacement definition, indented to sit in the file.",
+    inputSchema: {
+      name: z.string().optional().describe("Symbol to replace, resolved via the index."),
+      path: z.string().optional().describe("File path (use with line instead of name)."),
+      line: z.number().int().min(1).optional().describe("Definition line (use with path)."),
+      body: z.string().describe("The complete new definition, replacing the old one verbatim."),
+    },
+  },
+  async ({ name, path: p, line, body }) => {
+    if (typeof body !== "string" || !body.length) return "body (the complete replacement definition) is required.";
+    const index = await loadIndex(ROOT);
+
+    let file: string, defLine: number;
+    if (p && line) {
+      file = toPosix(path.relative(ROOT, safeResolve(p)));
+      defLine = line;
+    } else if (name) {
+      const found: { file: string; line: number }[] = [];
+      for (const [f, entry] of Object.entries(index.files))
+        for (const s of entry.symbols) if (s.name === name) found.push({ file: f, line: s.line });
+      if (found.length === 0) return `No definition indexed for "${name}". Run index_repo, or pass path + line.`;
+      if (found.length > 1)
+        return (
+          `"${name}" has ${found.length} definitions — pass path + line to pick one, I won't guess which to overwrite:\n` +
+          found.map((d) => `  ${d.file}:${d.line}`).join("\n")
+        );
+      file = found[0].file;
+      defLine = found[0].line;
+    } else {
+      return "Provide either name, or path + line, plus body.";
+    }
+
+    const abs = path.join(ROOT, file);
+    let source: string;
+    try {
+      source = await readFileCached(abs);
+    } catch {
+      return `Cannot read ${file}.`;
+    }
+    // Snapshot BEFORE writing — the whole safety story. If this edit is wrong,
+    // the pre-edit file is under .slimdex/snapshots/<stamp>/.
+    const snap = await takeSnapshot(ROOT, [file]);
+    const res = spliceSymbol(source, defLine, body);
+    await fs.writeFile(abs, res.text, "utf8");
+    // Re-index (mtime changed -> only this file re-parses) so the new span is
+    // queryable immediately and the reported line numbers are the real ones.
+    await buildOrRefresh(ROOT, false);
+    const fresh = await loadIndex(ROOT);
+    const stillThere = (fresh.files[file]?.symbols ?? []).some((s) => s.line >= res.oldStart && s.line <= res.newEnd);
+    const snapNote = snap.files > 0 ? `snapshot saved (${snap.dir})` : "snapshot skipped (file too large or unreadable)";
+    const parseNote = stillThere
+      ? "re-indexed, a symbol is present in the new range"
+      : "⚠ re-indexed but no symbol parsed in the new range — check the body is a valid declaration";
+    return (
+      `Replaced ${name ?? `${file}:${defLine}`}: lines ${res.oldStart}-${res.oldEnd} → ${res.oldStart}-${res.newEnd} ` +
+      `(${res.newEnd - res.oldStart + 1} line(s)). ${snapNote}; ${parseNote}.`
+    );
   }
 );
 
@@ -650,7 +807,16 @@ tool(
   },
   async ({ text: t, tags }) => {
     const mem = await loadMemory(ROOT);
-    const fact: MemoryFact = { id: randomUUID().slice(0, 8), text: t, tags: tags ?? [], created: new Date().toISOString() };
+    // Decision provenance: what the agent was looking at when it concluded this.
+    // Best-effort — a memory must save even if the journal is empty/unreadable.
+    const context = await recentHints(ROOT, 8);
+    const fact: MemoryFact = {
+      id: randomUUID().slice(0, 8),
+      text: t,
+      tags: tags ?? [],
+      created: new Date().toISOString(),
+      ...(context ? { context } : {}),
+    };
     mem.facts.push(fact);
     await saveMemory(ROOT, mem);
     return `Saved memory ${fact.id}${fact.tags.length ? " [" + fact.tags.join(", ") + "]" : ""}.`;
@@ -686,6 +852,35 @@ tool(
     },
   },
   async ({ limit }) => formatRecap(ROOT, limit ?? 200)
+);
+
+tool(
+  "brief",
+  {
+    title: "One-shot session onboarding brief",
+    description:
+      "The whole point of the persistence layer in one call: instead of stitching memory_list + recap yourself at the " +
+      "start of a session, get a synthesized opener — what the repo is, where recent sessions were digging (from the " +
+      "automatic journal), and each saved conclusion CHECKED against the current index so stale ones are flagged (✓ still " +
+      "references live code, ⚠ may be stale). Call this first in a fresh chat; it starts you informed instead of blank.",
+    inputSchema: {
+      limit: z.number().int().min(1).max(400).optional().describe("Journaled calls to summarize for the focus section (default 200)."),
+    },
+  },
+  async ({ limit }) => {
+    const index = await loadIndex(ROOT);
+    if (Object.keys(index.files).length === 0) return "Index is empty — run index_repo first, then brief.";
+    const mem = await loadMemory(ROOT);
+    const recap = await formatRecap(ROOT, limit ?? 200);
+    // Repo-level freshness: how many files drifted from the index since it was
+    // built, so the brief itself says whether to re-index before trusting it.
+    let staleCount = 0;
+    for (const [f, e] of Object.entries(index.files)) if (await isStale(ROOT, f, e.mtimeMs)) staleCount++;
+    const freshLine = staleCount
+      ? `\n⚠ ${staleCount} file(s) changed since the index was built — run index_repo before trusting line numbers.`
+      : "";
+    return composeBrief({ index, facts: mem.facts, recap, root: ROOT }) + freshLine;
+  }
 );
 
 tool(

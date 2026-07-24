@@ -145,6 +145,25 @@ search_symbols(query: "loadMem")
 → loadMemory   function   src/store.ts:108
 ```
 
+### `search_intent`
+
+**Technical:** BM25 ranking of every indexed symbol against a natural-language
+query. Names are tokenized on camelCase/snake_case boundaries, so the query
+words are matched against the *words inside* the name, plus its kind and
+filename. No embeddings, no model, no second index — pure lexical scoring over
+the symbol table you already have. Scores are explainable term contributions.
+
+**Plain words:** "I don't know what it's called, but it *validates an email*."
+This searches by meaning-of-the-name, not spelling — the featherweight version
+of semantic search, with nothing to install and nothing to keep in sync.
+
+```
+search_intent(query: "validate a user email")
+→ src/auth.ts:40   function validateEmail    (3.11)
+  src/auth.ts:88   function emailValidator   (2.74)
+  src/user.ts:12   method   checkUserAddress (0.91)
+```
+
 ### `find_definition`
 
 **Technical:** Exact-name lookup in the index → definition site(s) as
@@ -169,6 +188,25 @@ identifier in an unrelated file will match too. Scope with `pathPrefix`.
 find_references(name: "ensureDir", pathPrefix: "src")
 → src/store.ts:69:8    (inside loadIndex)
   src/store.ts:114:9   (inside saveMemory)
+```
+
+### `find_tests`
+
+**Technical:** Of everything that references a symbol, the subset whose
+references live in test files — decided by path convention (`*.test.*`,
+`*.spec.*`, `__tests__/`, `test_*.py`, `*_test.go`, `*_spec.rb`, `*Test.java`,
+…) or by an enclosing `describe`/`it`/`test` title. Textual, so the same
+same-named-identifier caveat as `find_references` applies.
+
+**Plain words:** "If I change this, which tests will catch a break?" — run those
+instead of the whole suite. And if the answer is *none*, you learn that before
+you edit, not after.
+
+```
+find_tests(name: "calculateTax")
+→ 2 test reference(s) to "calculateTax" — run these before changing it:
+    test/tax.test.ts:12   in test computes GST
+    test/tax.test.ts:45   in test rounds correctly
 ```
 
 ### `search_code`
@@ -226,6 +264,33 @@ get_context(name: "saveMemory", include: ["definition", "callers"])
 
 ---
 
+## Group 4b — Writing code back (the output side)
+
+Every other tool here optimizes what the model *reads*. This one optimizes what
+it *writes* — output tokens cost roughly 4–5× input, and the biggest avoidable
+chunk is re-sending old code to an edit tool just so it can find the spot.
+
+### `replace_symbol`
+
+**Technical:** Overwrites the whole definition block of a symbol — resolved by
+`name` via the index (or explicit `path`+`line`) — with `body`. The line range
+comes from the same `extractBlock` the read tools use. The file is snapshotted
+to `.slimdex/snapshots/` *before* the write, then re-indexed, and the response
+reports the new line span. An ambiguous or unknown name is refused, not guessed.
+
+**Plain words:** "Replace this function with that" — you send only the new
+version. You never paste the old code back just so a matcher can locate it,
+because Slimdex already knows where it lives. There's an automatic backup, and
+you're told the new line numbers so you don't have to re-read to check.
+
+```
+replace_symbol(name: "calculateTax", body: "export function calculateTax(...) {\n  ...\n}")
+→ Replaced calculateTax: lines 40-58 → 40-61 (22 line(s)). snapshot saved
+  (.slimdex/snapshots/2026-…); re-indexed, a symbol is present in the new range.
+```
+
+---
+
 ## Group 5 — How files connect
 
 ### `dep_graph`
@@ -260,10 +325,35 @@ first and starts already informed.
 The rule of thumb: save **decisions, gotchas, and "why"s** — things the code
 itself cannot tell you. Don't save what reading the code would reveal anyway.
 
+### `brief`
+
+**Technical:** One synthesized session-opener. Combines the repo summary, the
+journal-derived recap (where recent sessions were digging), and every saved
+memory fact cross-referenced against the live index — each flagged ✓ (still
+references code that exists) or ⚠ (names something no longer in the index, so it
+may be stale). Conservative: only facts whose every code mention is gone get the
+stale flag; a fact naming nothing code-shaped is left unmarked.
+
+**Plain words:** "Catch me up." Instead of reading the notebook and the activity
+log separately and wondering whether the notes are still true, you get one
+paragraph that already checked them against the current code. Call it first in a
+fresh chat.
+
+```
+brief()
+→ Onboarding brief for /repo
+    Repo: 17 indexed file(s), 102 symbol(s). Languages: .ts×17.
+    Recap — files examined: src/graph.ts; symbols looked up: nameRefEdges …
+    Saved conclusions (checked against the current index):
+      [39b8fc15] ✓ (graph) nameRefEdges also walks repo XML …
+      [aa01] ⚠ the fix lives in oldHelper()  (stale? mentions oldHelper …)
+```
+
 ### `memory_save`
 
-**Technical:** Appends a fact `{id, text, tags[], created}` to
-`memory.json`.
+**Technical:** Appends a fact `{id, text, tags[], created, context?}` to
+`memory.json`. `context` is provenance — a compact note of what the agent was
+looking at (from the journal) when the fact was saved — recorded automatically.
 
 **Plain words:** Write a sticky note in the shared notebook.
 

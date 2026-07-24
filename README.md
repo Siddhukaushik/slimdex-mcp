@@ -19,7 +19,10 @@ list, rather than loading a file to find one thing.
 | `search_code` | `path:line:col` + the matching line with caret highlight; `limit`/`offset`/cursor pagination |
 | `find_definition` | Definition site(s) of a symbol as `path:line:col` |
 | `search_symbols` | Fuzzy symbol-name lookup, ranked exact→prefix→substring→subsequence |
+| `search_intent` | Natural-language query ranked over symbols by BM25 (no embeddings) — find code by what it does |
 | `find_references` | Textual references as `path:line:col` + enclosing function |
+| `find_tests` | Of the references to a symbol, which live in test files — or a warning that none do |
+| `replace_symbol` | Overwrite a symbol's body addressed by name (no re-sent old code); snapshots first, re-indexes after |
 | `get_context` | One call: opt-in definition / signature / callers / imports / dependents, budgeted |
 | `repo_map` | Dir-level file/line/symbol counts; `path:` drills into a dir's largest files |
 | `changed_files` | Changed files + which symbols each hunk lands in |
@@ -27,6 +30,7 @@ list, rather than loading a file to find one thing.
 | `stats` | Per-tool call counts and response sizes, in characters |
 | `batch` | Runs several calls in one request |
 | `recap` | Prior sessions' activity, reconstructed automatically from the server's tool-call journal — works even when nothing was saved |
+| `brief` | One-shot session opener: repo summary + journal-derived focus + saved conclusions checked against the live index (✓ live / ⚠ maybe stale) |
 | `snapshot` | Copies uncommitted files into `.slimdex/snapshots/` (also auto-runs hourly via `index_repo` on a dirty tree) — insurance against accidental resets, not a substitute for committing |
 | `memory_save/search/list/delete` | Durable notes in `.slimdex/memory.json` |
 
@@ -35,11 +39,19 @@ clients inject it into the model's context automatically.
 
 ### Recommended agent flow
 
-`get_context("Foo")` first — it aims to answer "what is this, who calls it, what
-does it depend on" in one response. Drop to `get_symbol_context` for one body,
-`get_file_skeleton` for a file's shape, and `read_lines` when you need exact
-source. Use `batch` to bundle several lookups. Every search tool takes `limit`
-(default 20) and `offset`.
+`brief` first, at the very start of a session — one call that reports what the
+repo is, where recent sessions were digging, and which saved conclusions still
+match the code (stale ones flagged), so a fresh chat starts informed instead of
+blank. Then `get_context("Foo")` to answer "what is this, who calls it, what does
+it depend on" in one response. Don't know the name, only what it does? —
+`search_intent("parse the config file")` ranks symbols by intent with BM25, no
+embeddings. Drop to `get_symbol_context` for one body (it flags itself if the file
+drifted from the index, so you don't re-read to check), `get_file_skeleton` for a
+file's shape, and `read_lines` when you need exact source. Before editing a
+symbol, `find_tests` on it to see what covers it; to
+rewrite a whole function, `replace_symbol` (you send only the new body — the old
+code isn't re-sent just to locate the edit). Use `batch` to bundle several
+lookups. Every search tool takes `limit` (default 20) and `offset`.
 
 **Response budgeting:** `get_context` sections are opt-in via `include`
 (default: definition, signature, callers, imports — add `body` or `dependents`
@@ -112,7 +124,7 @@ instructed to use only Slimdex and one instructed to avoid it, and compare
 
 Being explicit, since the rest of this README is easy to over-read.
 
-**Covered by the unit suite** (`npm test` runs 173 tests across 16 files):
+**Covered by the unit suite** (`npm test` runs 208 tests across 21 files):
 
 - Symbol extraction across JS/TS (incl. class and object-literal methods),
   Python, Go, Rust, Java/C#, and comment skipping — `symbols.test.ts`
@@ -145,14 +157,32 @@ Being explicit, since the rest of this README is easy to over-read.
   comment/string mentions excluded and per-build caching — `apexgraph.test.ts`
 - The in-memory file cache serves repeats without re-reading and always serves
   fresh content after an on-disk change — `fscache.test.ts`
+- Test-file detection across JS/TS/Python/Go/Ruby/Java/C# conventions, with
+  Windows separators normalized and ordinary source (`latest.ts`, `Contest.java`)
+  not misflagged — `testlink.test.ts`
+- The write side: replacing a symbol's block, trailing code preserved, and CRLF
+  vs LF line endings kept so an edit isn't reflowed into a whole-file diff —
+  `edit.test.ts`
+- Memory staleness: a fact is marked live when it names a symbol/file that still
+  exists, flagged stale only when every code mention is gone, and left unflagged
+  for prose — plus brief composition — `brief.test.ts`
+- Intent search: camelCase/snake_case tokenization, and BM25 ranking that surfaces
+  a differently-named symbol by its intent words while scoring an unrelated query
+  to nothing — `intent.test.ts`
+- Freshness: a file newer than its indexed mtime reads as stale (line numbers may
+  be off), a matching mtime reads as fresh, and a missing file never cries stale —
+  `freshness.test.ts`
 
 **Covered end to end, through the real MCP server** (`integration.test.ts` spawns
 the server over stdio against a temporary fixture repo and asserts on output):
 `index_repo`, `repo_map`, `read_lines`, `get_file_skeleton`, `outline_file`,
-`get_symbol_context`, `find_definition`, `find_references`, `get_context`
-(including its `maxChars` cap), `dep_graph` (imports + mermaid), `batch`,
-`search_code`, `search_symbols`, `stats`, the `memory_save/search/list/delete`
-round trip, the path-escape guard, and the not-found paths.
+`get_symbol_context`, `find_definition`, `find_references`, `find_tests` (the hit
+and the no-coverage warning), `search_intent` (intent ranking), `get_context`
+(including its `maxChars` cap),
+`dep_graph` (imports + mermaid), `batch`, `search_code`, `search_symbols`,
+`stats`, `brief`, `replace_symbol` (write-then-query round trip and the
+unknown-symbol refusal), the `memory_save/search/list/delete` round trip, the
+path-escape guard, and the not-found paths.
 
 CI runs the build and both suites on Ubuntu + Windows, Node 20 and 22.
 
@@ -483,12 +513,15 @@ Cline settings → MCP Servers → add:
 
 ## Typical agent workflow
 
-1. `index_repo` once at the start (faster on subsequent runs).
+1. `index_repo` once at the start (faster on subsequent runs), then `brief` to
+   pick up where past sessions left off with stale notes already flagged.
 2. `repo_map` → get the lay of the land.
 3. `outline_file` on a file of interest → pick line ranges.
 4. `read_lines` for just those ranges.
 5. `find_definition` / `find_references` / `dep_graph` to navigate.
-6. `memory_save` decisions and gotchas so the next session starts informed.
+6. `find_tests` before editing a symbol; `replace_symbol` to rewrite one without
+   re-sending its old body.
+7. `memory_save` decisions and gotchas so the next session starts informed.
 
 ## License
 
