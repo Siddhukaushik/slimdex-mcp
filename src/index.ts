@@ -414,11 +414,16 @@ tool(
     const index = await loadIndex(ROOT);
     let files = Object.keys(index.files);
     if (pathPrefix) files = files.filter((f) => f.startsWith(toPosix(pathPrefix)));
+    // Scan ONLY test files (by path convention or by containing an indexed
+    // describe/it/test title). A symbol used heavily in non-test code could
+    // otherwise fill the match window before any test reference is reached,
+    // yielding a false "no tests" — so we narrow the corpus, not just the result.
+    const testFiles = files.filter((f) => isTestFile(f) || (index.files[f]?.symbols ?? []).some((s) => s.kind === "test"));
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const lim = limit ?? 50;
-    const { matches } = await searchFiles(ROOT, files, `\\b${escaped}\\b`, {
+    const { matches } = await searchFiles(ROOT, testFiles, `\\b${escaped}\\b`, {
       regex: true,
-      maxMatches: 500, // scan wide, then filter to tests
+      maxMatches: 500,
       literalHint: name,
     });
     const hits = matches
@@ -558,7 +563,19 @@ tool(
 
     let file: string, defLine: number;
     if (p && line) {
-      file = toPosix(path.relative(ROOT, safeResolve(p)));
+      // safeResolve blocks `..` traversal, but a symlink INSIDE the repo can
+      // still point outside it — and this tool writes to disk. Resolve real
+      // paths and confirm the target is genuinely under ROOT before writing.
+      const abs = safeResolve(p);
+      try {
+        const rootReal = await fs.realpath(ROOT);
+        const targetReal = await fs.realpath(abs);
+        const rel = path.relative(rootReal, targetReal);
+        if (rel.startsWith("..") || path.isAbsolute(rel)) return `path escapes project root: ${p}`;
+      } catch {
+        return `Cannot resolve ${p} (does it exist?).`;
+      }
+      file = toPosix(path.relative(ROOT, abs));
       defLine = line;
     } else if (name) {
       const found: { file: string; line: number }[] = [];

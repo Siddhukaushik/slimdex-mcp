@@ -34,4 +34,12 @@ describe("spliceSymbol", () => {
     expect(r.eol).toBe("\n");
     expect(r.text).not.toContain("\r\n");
   });
+
+  it("throws on a defLine past EOF instead of appending at the wrong place", () => {
+    expect(() => spliceSymbol(src, 999, "x")).toThrow(/out of range/);
+  });
+
+  it("throws on a defLine below 1", () => {
+    expect(() => spliceSymbol(src, 0, "x")).toThrow(/out of range/);
+  });
 });
