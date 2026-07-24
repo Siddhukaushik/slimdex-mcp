@@ -23,6 +23,10 @@ You start with `repo_map` to see the folder structure and get oriented. Then
 you use `search_symbols` or `search_code` to find what you're looking for
 across the codebase — or, when you know what the code *does* but not its name,
 `search_intent` ranks symbols by a natural-language query (BM25, no embeddings).
+Or, to understand a whole *area* rather than hunt symbol by symbol,
+`context_pack("how does X work")` runs the entire exploration for you and returns
+one bounded bundle — the relevant symbols, how they connect, and the key bodies —
+so it costs one call and one transcript entry instead of ten scattered lookups.
 Once you've found it, `find_definition` takes you to where it's declared, and
 `get_file_skeleton` or `outline_file` shows you the structure without reading
 everything. Then `get_context`, `get_symbol_context`, or `read_lines` pulls the
@@ -40,7 +44,10 @@ locate the edit, and the file is snapshotted first. And throughout all this,
 `memory_save` and `memory_search` let you document what you've learned so it
 persists across sessions; `brief` reads all of that back at the start of the
 next session — with any note that no longer matches the code already flagged —
-so you start informed. `stats` tracks which tools are consuming your tokens so
+so you start informed. And `digest_save` keeps a one-page architecture
+cheat-sheet the whole team's agents can read via `digest_get` instead of
+re-exploring the code each time, with a freshness check that flags it when a
+covered file changes. `stats` tracks which tools are consuming your tokens so
 you stay efficient.
 
 Everything works together to keep you reading only what's necessary — avoiding

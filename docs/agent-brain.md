@@ -20,11 +20,15 @@ index_repo    then    brief
 - `index_repo` first so `brief`'s staleness check runs against fresh symbols;
   re-run it after edits or a branch switch.
 - On a dirty tree, also `changed_files` — the diff's symbols, not the patch.
+- If a `digest_get` cheat-sheet exists and is fresh, read it — it explains the
+  system in a page so you skip re-exploring the code. Write one with `digest_save`
+  (set `covers`) once you understand the shape; it's the biggest cross-session saving.
 
 ## Question → tool (never a file read)
 | Question | Tool |
 |---|---|
 | Where is the code / what's this repo? | `repo_map` (then `repo_map path:"dir"`) |
+| Understand a whole AREA in one call? | `context_pack("how X works")` (not ~10 calls) |
 | What's in this file? | `get_file_skeleton` (or `outline_file`) |
 | Where is symbol X defined? | `find_definition` / fuzzy: `search_symbols` |
 | Know what it does, not its name? | `search_intent` (BM25, no embeddings) |

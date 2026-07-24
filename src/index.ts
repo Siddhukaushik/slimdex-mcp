@@ -24,7 +24,7 @@ import { buildGraph, dependents, toMermaid, nameRefEdges, mergeEdges } from "./g
 import { fileSkeleton, getSymbolContext, buildContext, enclosingSymbol } from "./intel.js";
 import { changedFiles, formatChanged, isGitRepo } from "./git.js";
 import { loadStats, formatStats, record, resetStats } from "./stats.js";
-import { loadIndex, loadMemory, saveMemory, type MemoryFact } from "./store.js";
+import { loadIndex, loadMemory, saveMemory, loadDigest, saveDigest, type MemoryFact, type DigestStore } from "./store.js";
 import { readFileCached } from "./fscache.js";
 import { journalRecord, formatRecap, recentHints } from "./journal.js";
 import { takeSnapshot, newestSnapshotAgeMs } from "./snapshot.js";
@@ -33,6 +33,8 @@ import { spliceSymbol } from "./edit.js";
 import { composeBrief } from "./brief.js";
 import { rankIntent } from "./intent.js";
 import { isStale, stalenessNote } from "./freshness.js";
+import { buildPack } from "./pack.js";
+import { staleCovered, formatDigest } from "./digest.js";
 import { TERSE, t, fileHeader, countNotice, truncNotice } from "./terse.js";
 
 const ROOT = path.resolve(process.env.SLIMDEX_ROOT || process.argv[2] || process.cwd());
@@ -55,6 +57,9 @@ function safeResolve(p: string): string {
 const INSTRUCTIONS = `slimdex replaces "read the whole file" with narrow retrieval. To actually save tokens:
 
 1. Start with repo_map, not a file open. On a big repo, orient at the directory level before drilling in.
+   To understand an unfamiliar AREA ('how does auth work'), use context_pack("<question>") — it runs the
+   whole exploration server-side (rank + connect + bodies) and returns ONE bounded bundle, instead of ~10
+   separate calls that each linger in the transcript and re-cost every later turn.
 2. Run index_repo liberally — it only reparses files whose mtime changed, so treat it like \`git fetch\`,
    not a one-time setup step. Re-run it before trusting a search if anything else may have touched the repo.
 3. get_file_skeleton before any full read of a file over ~300 lines — then FOLLOW THROUGH: pull the
@@ -91,6 +96,10 @@ MEMORY — this is what makes a new chat start informed instead of blank:
     index_repo instead. Memory is for the things reading the code cannot tell you.
 13. Correct rather than duplicate: memory_search before saving, and memory_delete facts that turn out
     to be wrong. A store full of stale or repeated notes is worse than an empty one.
+13b. Once you understand the repo's shape, digest_save a compact architecture cheat-sheet (modules, key
+    flows, entry points, conventions) with \`covers\` set to the areas it describes. digest_get reads it
+    back with a freshness verdict, so the NEXT session reads a page instead of re-exploring the code —
+    and is told if a covered file changed since. This is the single biggest cross-session saving.
 
 EDITING — the output side, where tokens actually cost the most (≈4-5x input):
 
@@ -462,6 +471,34 @@ tool(
     if (!hits.length) return `No symbol matched the intent "${query}". Try different words, or search_code for a literal string.`;
     const rows = hits.map((h) => `  ${h.file}:${h.line}  ${h.kind} ${h.name}  (${h.score.toFixed(2)})`);
     return `Ranked by intent for "${query}" (BM25 score):\n${rows.join("\n")}`;
+  }
+);
+
+tool(
+  "context_pack",
+  {
+    title: "One-call task context bundle",
+    description:
+      "Understand a whole topic in ONE call instead of ~10. Give a natural-language query ('how does auth work') and " +
+      "slimdex runs the exploration itself — BM25-ranks the relevant symbols, shows how their files connect (import " +
+      "graph, one hop), and includes the top few bodies — assembled into a single bundle under a char budget. Saves " +
+      "the round-trips AND keeps the transcript from bloating with ten separate results (the cost that compounds every " +
+      "later turn). Use it to orient on an unfamiliar area; drop to get_symbol_context / read_lines for exact source.",
+    inputSchema: {
+      query: z.string().describe("The topic to understand, in words — 'how does login work', 'the indexing pipeline'."),
+      budget: z.number().int().min(1000).max(20000).optional().describe("Soft char cap on the whole pack (default 6000)."),
+      symbols: z.number().int().min(1).max(20).optional().describe("How many ranked symbols to list (default 8)."),
+      bodies: z.number().int().min(0).max(8).optional().describe("How many top symbols to include full bodies for (default 3)."),
+    },
+  },
+  async ({ query, budget, symbols, bodies }) => {
+    const index = await loadIndex(ROOT);
+    const getBody = async (file: string, line: number, kind: string, maxLines: number): Promise<string> => {
+      const siblings = (index.files[file]?.symbols ?? []).map((s) => s.line).filter((l) => l > line).sort((a, b) => a - b);
+      const ctx = await getSymbolContext(ROOT, file, line, kind, 0, 0, maxLines, siblings[0]);
+      return ctx.text;
+    };
+    return buildPack(index, query, getBody, { budget, symbols, bodies });
   }
 );
 
@@ -897,6 +934,49 @@ tool(
       ? `\n⚠ ${staleCount} file(s) changed since the index was built — run index_repo before trusting line numbers.`
       : "";
     return composeBrief({ index, facts: mem.facts, recap, root: ROOT }) + freshLine;
+  }
+);
+
+tool(
+  "digest_save",
+  {
+    title: "Save the repo architecture digest",
+    description:
+      "Store a compact 'how this repo works' cheat-sheet you author once — modules, key flows, entry points, " +
+      "conventions — so future sessions read a page instead of re-exploring the code to relearn the system. Pass " +
+      "`covers` (the paths/dirs it summarizes) so slimdex can tell later sessions when a covered file changed and the " +
+      "digest may be stale. Overwrites the previous digest. Save what reading the code CAN'T quickly tell you: the why " +
+      "and the shape, not a symbol list (the index already has that).",
+    inputSchema: {
+      text: z.string().describe("The digest prose — compact, the architecture and flows, not a file dump."),
+      covers: z.array(z.string()).optional().describe("Repo-relative paths/dirs this digest summarizes (omit = whole repo)."),
+    },
+  },
+  async ({ text: t, covers }) => {
+    const digest: DigestStore = { version: 1, text: t, covers: covers ?? [], savedAt: new Date().toISOString() };
+    await saveDigest(ROOT, digest);
+    const scope = digest.covers.length ? digest.covers.join(", ") : "whole repo";
+    return `Saved architecture digest (${t.length} chars, covers: ${scope}). digest_get reads it back with a freshness check.`;
+  }
+);
+
+tool(
+  "digest_get",
+  {
+    title: "Read the repo architecture digest",
+    description:
+      "Return the stored architecture cheat-sheet, plus a freshness verdict: each covered file is checked against when " +
+      "the digest was written, and any that changed since are flagged as reasons it may be out of date. Read this early " +
+      "in a session to understand the system without re-exploring; if it's flagged stale, re-read the changed areas and " +
+      "digest_save an update.",
+    inputSchema: {},
+  },
+  async () => {
+    const digest = await loadDigest(ROOT);
+    if (!digest) return "No architecture digest saved yet — write one with digest_save so future sessions skip re-exploring.";
+    const index = await loadIndex(ROOT);
+    const stale = await staleCovered(ROOT, digest, Object.keys(index.files));
+    return formatDigest(digest, stale);
   }
 );
 
