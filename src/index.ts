@@ -285,7 +285,16 @@ tool(
     const hasMore = total > start + matches.length;
     const next = hasMore ? `\nnext cursor: ${encodeCursor(start + lim, index.builtAt)}` : "";
     const totalStr = exact ? `${total}` : `${total}+ (scan cap reached)`;
-    return `${t(`${matches.length} of ${totalStr} match(es)`, `${matches.length}/${totalStr}`)}${staleNote}\n${formatMatches(matches)}${next}`;
+    // A silent 0 is the recurring trap: a regex pattern used in the (default)
+    // literal mode matches nothing, which reads like an indexing gap and sends
+    // the agent off to grep with the wrong lesson. Name the two real causes.
+    let zeroHint = "";
+    if (matches.length === 0 && !cursor) {
+      zeroHint = !regex && /[|()\[\]{}.*+?^$\\]/.test(pattern)
+        ? `\n  Note: "${pattern}" contains regex characters but regex mode is OFF (search_code is literal by default). Retry with regex:true for alternation/wildcards, or use find_definition/find_references for a symbol name.`
+        : `\n  Note: searched ${files.length} indexed file(s). If the file is new or just changed, run index_repo; for a symbol name, find_definition/find_references is sharper than text search.`;
+    }
+    return `${t(`${matches.length} of ${totalStr} match(es)`, `${matches.length}/${totalStr}`)}${staleNote}\n${formatMatches(matches)}${next}${zeroHint}`;
   }
 );
 
