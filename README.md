@@ -239,6 +239,12 @@ In [`docs/`](docs/):
   self-contained page for the browser
 - [`token-savings-report.md`](docs/token-savings-report.md) — the original A/B
   measurement, its method, and how to repeat it
+- [`agent-brain.md`](docs/agent-brain.md) — the full operating discipline as a
+  readable document
+- [`agent-brain-slim.md`](docs/agent-brain-slim.md) — **the one to drop into a
+  repo** as CLAUDE.md / AGENTS.md. The server already injects the tool rules on
+  every turn, so this carries only what they don't: session hygiene, review
+  discipline, honest limits, env knobs. Half the size, nothing lost.
 
 ## Language coverage
 
