@@ -27,6 +27,30 @@ async function git(root: string, args: string[]): Promise<string> {
   }
 }
 
+/**
+ * Refuse a `base` that git would read as an OPTION rather than a revision.
+ *
+ * git parses any argv element beginning with `-` as an option, wherever it
+ * sits. `base` arrives straight from a tool call, so `--output=<path>` turned
+ * changed_files into an arbitrary file write — verified: it wrote the diff to a
+ * chosen path outside the repo — and options such as `--ext-diff` can reach
+ * repo-configured external commands. Using execFile (no shell) prevents SHELL
+ * injection; this is the separate argv-level problem that it does not solve.
+ *
+ * A trailing `--` does not help, because git parses options appearing BEFORE
+ * it and the revision has to sit there. `--end-of-options` would, but it needs
+ * git >= 2.24 and nothing else here pins a git version. Rejecting the leading
+ * dash is complete for the same reason it is simple: a leading `-` is the only
+ * thing that makes an argv element an option in the first place.
+ */
+export function assertUsableRef(base: string): void {
+  if (base.startsWith("-"))
+    throw new Error(
+      `base "${base}" starts with "-", which git reads as an option rather than a revision — refusing it. ` +
+        `Pass a branch, tag or commit (e.g. "main", "HEAD~3").`
+    );
+}
+
 export async function isGitRepo(root: string): Promise<boolean> {
   try {
     const out = await git(root, ["rev-parse", "--is-inside-work-tree"]);
@@ -88,6 +112,7 @@ function parseNameStatus(out: string): Map<string, string> {
 }
 
 export async function changedFiles(root: string, index: CodeIndex, base?: string): Promise<ChangedFile[]> {
+  if (base !== undefined) assertUsableRef(base);
   const ref = base ?? "HEAD";
   const [patch, numstat, nameStatus] = await Promise.all([
     git(root, ["diff", "--unified=0", ref]),
