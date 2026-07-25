@@ -1,14 +1,13 @@
 # Slimdex Agent Brain
 
 > **Dropping this into a repo as CLAUDE.md / AGENTS.md? Use
-> [`agent-brain-slim.md`](agent-brain-slim.md) instead.** Roughly half of this
-> document — the session opener, question→tool routing, the follow-through rule,
-> memory and editing discipline — is injected into the model's context by the
-> server itself on every turn. A per-session copy of it is pure duplication in a
-> file whose purpose is to save context. The slim version carries only what the
-> server instructions don't: session hygiene, review discipline, honest limits,
-> env knobs. Keep this full version for reading, or for clients that don't
-> surface a server's `instructions`.
+> [`agent-brain-slim.md`](agent-brain-slim.md) instead.** It is self-contained —
+> savings ladder, question→tool table, memory discipline, session hygiene, review
+> discipline, honest limits, env knobs — but carries the tool rules as dense
+> tables rather than the prose below, since the server injects a fuller version of
+> those into the model's context every turn anyway. Same coverage, ~30% smaller,
+> and the rules agents skip most often (the follow-through rule) land twice on
+> purpose. Keep this full version for reading.
 
 Operating instructions for any LLM in a repo with the slimdex MCP server.
 Goal: fewest tokens that still guarantee a correct result. This file is HOW to

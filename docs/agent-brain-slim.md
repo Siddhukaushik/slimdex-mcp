@@ -1,21 +1,66 @@
 # Slimdex Agent Brain
 
-**This file deliberately does NOT repeat the tool rules.** The slimdex server
-injects those into your context automatically on every turn (session opener,
-question→tool routing, the follow-through rule, memory discipline, editing).
-Duplicating them here would cost tokens in a file whose entire purpose is saving
-them.
-
-If your client does NOT surface a server's `instructions` (Claude Code, Claude
-Desktop and Codex all do), you are missing the tool rules — use the full
-`docs/agent-brain.md` from the slimdex-mcp repo instead of this file. That is also
-the human-readable reference if you just want to read the whole thing.
-
-What follows is only what the server instructions do *not* carry.
+Everything you need in one page. The slimdex server also injects fuller versions of
+the tool rules into your context each turn; the tables here are the compressed form
+so this file works on its own, and so the rules that get skipped most often are in
+front of you twice. Full prose reference: `docs/agent-brain.md` in the slimdex-mcp
+repo.
 
 ## Prime directive
 Return the answer, not the haystack. But when you genuinely can't be sure without
 more context, get it — a wrong edit is more expensive than any read.
+
+## Savings ladder — biggest first
+| Do this | Instead of | Why it pays |
+|---|---|---|
+| `batch: [index_repo, brief]` to open | reading files, or `memory_list full:true` | opener is bounded; a full memory dump measured ~18,600 chars |
+| `context_pack "<question>"` to learn an area | ~10 exploratory calls | one bounded bundle; ten results linger in the transcript and re-cost every later turn |
+| `get_file_skeleton` → `get_symbol_context names:[…]` | reading a 300+ line file | the skeleton tells you where everything is; read only that |
+| `get_context name:"X"` | chaining find_definition + find_references + dep_graph | one call, one response |
+| `replace_symbol name/edits:[…]` | re-emitting a file to change a few lines | output costs ~4–5× input |
+| `digest_save` once you know the shape | the next session re-exploring from zero | biggest cross-session saving |
+| save + fresh chat | one long session | history is re-read every turn |
+
+**The follow-through rule — the #1 observed leak.** After a skeleton, pull ONLY the
+named symbols or line ranges. A whole-file read after a skeleton throws the saving
+away at the exact moment it was about to pay. `stats` prints
+`follow-through: N skeleton(s) → M narrow read(s)`; if M < N you are doing it wrong.
+Exception: if you already know you're rewriting the whole file, skip the skeleton.
+
+## Question → tool (never a bare file read)
+| Question | Tool |
+|---|---|
+| What is this repo / where is the code? | `repo_map`, then `repo_map path:"dir"` |
+| How does <area> work? | `context_pack` |
+| What's in this file? | `get_file_skeleton` (`outline_file` if unindexed) |
+| Where is X defined? | `find_definition`; half-remembered name → `search_symbols` |
+| The thing that does Y, name unknown? | `search_intent` |
+| Body of X (or X, Y, Z)? | `get_symbol_context names:[…]` |
+| Exact lines 40–80? | `read_lines` |
+| Who calls X? | `find_references` (+ `pathPrefix`) |
+| What is X, who calls it, what does it use? | `get_context` |
+| Which tests cover X? | `find_tests` |
+| Where does this literal string appear? | `search_code` (real text only, `regex:true` for `A|B`) |
+| What changed in the tree? | `changed_files` |
+| What depends on this file? | `dep_graph` (`mode:"mermaid"` for blast radius) |
+| What did past sessions conclude / do? | `brief`; then `memory_get ids:[…]` |
+
+Symbol-shaped questions → symbol tools, never `search_code`: plain text search
+returns same-named identifiers from unrelated files. Scope with `pathPrefix` when
+you know the area, and keep `limit` small, paging with `offset`/cursor.
+
+## Memory — how to save so it's worth having
+`memory_save` the moment something is confirmed: a decision and WHY, a non-obvious
+constraint, a gotcha that cost time, a confirmed bug, half-done work, agreed next
+steps. Sessions have no end signal — the user just opens a new chat, and anything
+unsaved is gone.
+- **Lead with the conclusion.** Later sessions see only the first ~150 chars as a
+  preview. Put the answer in the opening clause; one fact to one thing. Over ~1,200
+  chars warns; over 20,000 is refused (that's a `digest_save`, not a fact).
+- Tag it, `memory_search` before saving to correct rather than duplicate, and
+  `memory_delete` what turns out wrong. A store of stale notes is worse than none.
+- Don't save what the index or git already knows — memory is for what reading the
+  code cannot tell you.
 
 ## Session hygiene (the lever no tool can pull for you)
 Finish a chunk → save to memory → **start a fresh chat.** History is re-read every

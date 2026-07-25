@@ -242,9 +242,10 @@ In [`docs/`](docs/):
 - [`agent-brain.md`](docs/agent-brain.md) — the full operating discipline as a
   readable document
 - [`agent-brain-slim.md`](docs/agent-brain-slim.md) — **the one to drop into a
-  repo** as CLAUDE.md / AGENTS.md. The server already injects the tool rules on
-  every turn, so this carries only what they don't: session hygiene, review
-  discipline, honest limits, env knobs. Half the size, nothing lost.
+  repo** as CLAUDE.md / AGENTS.md. Self-contained and one page: savings ladder,
+  question→tool table, memory discipline, session hygiene, honest limits, env
+  knobs. Same coverage as the full document at ~30% of the prose, because the
+  tool rules are dense tables rather than paragraphs the server already injects.
 
 ## Language coverage
 
