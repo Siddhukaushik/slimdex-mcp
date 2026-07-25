@@ -38,10 +38,18 @@ await call("changed_files", {});
 // every run, so a repo's memory store slowly filled with "smoke test ran" rows —
 // test noise crowding out real facts. Correctness assertions live in
 // test/integration.test.ts; this script only proves the pipeline is alive.
+// Read back by id, NOT with memory_list: listing returns up to 50 facts and
+// printed a slice of the repo's real memory store into the transcript on every
+// run — this script only needs to prove the one fact it just wrote round-trips.
 const saved = await call("memory_save", { text: "slimdex smoke test ran", tags: ["test"] });
-await call("memory_list", {});
 const id = saved.match(/[0-9a-f]{6,}/)?.[0];
-if (id) await call("memory_delete", { id });
+if (id) {
+  await call("memory_get", { ids: [id] });
+  await call("memory_delete", { id });
+} else {
+  console.error("SMOKE FAIL: memory_save returned no id, so nothing was verified or cleaned up");
+  process.exit(1);
+}
 
 await call("stats", {});
 

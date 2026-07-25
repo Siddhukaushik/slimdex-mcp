@@ -68,6 +68,11 @@ describe("extractBlock — brace-scoped", () => {
     const lines = L(`function f() {\n  if (x) {\n    y();\n  }\n}\nfunction g() {}`);
     expect(extractBlock(lines, 1)).toEqual({ start: 1, end: 5 });
   });
+
+  it("refuses a brace-scoped block that exceeds the safety limit", () => {
+    const lines = ["function huge() {", ...Array.from({ length: 2500 }, (_, i) => `  const x${i} = ${i};`), "}"];
+    expect(() => extractBlock(lines, 1)).toThrow(/Refusing.*opening brace did not close/i);
+  });
 });
 
 describe("extractBlock — indentation-scoped (Python)", () => {

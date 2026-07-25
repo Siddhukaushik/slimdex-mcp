@@ -142,4 +142,13 @@ describe("broken config is visible, never silent", () => {
     expect(r.warnings.some((w) => w.includes('"maxFileBytes" must be a positive number'))).toBe(true);
     expect(r.index.files["a.ts"]).toBeDefined();
   });
+
+  it("surfaces symbol-cap truncation instead of presenting a partial index as complete", async () => {
+    const source = Array.from({ length: 2100 }, (_, i) => `function f${i}() {}`).join("\n");
+    const root = await makeRepo({ "many.ts": source });
+    const r = await buildOrRefresh(root);
+    expect(r.truncated).toBe(1);
+    expect(r.index.files["many.ts"].symbols).toHaveLength(2000);
+    expect(r.index.files["many.ts"].symbolsTruncated).toBe(true);
+  });
 });

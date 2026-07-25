@@ -34,7 +34,9 @@ export async function buildPack(index: CodeIndex, query: string, getBody: BodyFe
   const nSym = opts.symbols ?? 8;
   const nBodies = opts.bodies ?? 3;
 
-  const ranked = rankIntent(index, query, nSym);
+  // A context pack answers "how does this work", so implementation outranks the
+  // tests that exercise it — see RankOptions for why BM25 needs telling.
+  const ranked = rankIntent(index, query, nSym, { deprioritizeTests: true });
   if (!ranked.length) return `No symbols matched "${query}". Try search_code for a literal string, or different words.`;
 
   // Relevance floor. BM25 always returns SOMETHING for any term that appears

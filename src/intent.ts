@@ -51,12 +51,32 @@ export function buildCorpus(index: CodeIndex): Doc[] {
   return docs;
 }
 
+export interface RankOptions {
+  /**
+   * Rank every non-test symbol above every test symbol (context_pack).
+   *
+   * Test titles are prose — "splice symbol replaces a body" — so against a
+   * natural-language query they routinely out-score the very function they
+   * exercise. BM25 is matching wording, and a test title is worded like the
+   * question, often matching more query terms than the identifier does. That
+   * is a fine answer for search_intent ("which test covers this?") and the
+   * wrong one for context_pack, whose whole job is "show me how this works".
+   *
+   * Implemented as a sort tier rather than a score multiplier for two reasons:
+   * a multiplier big enough to beat a near-verbatim title match is arbitrary
+   * and still not a guarantee, and search_intent PRINTS the score — scaling it
+   * would make the reported number a fiction. Tests are demoted, never
+   * dropped, so they still surface once the implementation has had its turn.
+   */
+  deprioritizeTests?: boolean;
+}
+
 /**
  * BM25-rank the indexed symbols against a natural-language query. Pure over the
  * index; rebuilds the corpus each call (O(symbols), a few ms even at 50k) so it
  * never holds a second stale structure to invalidate.
  */
-export function rankIntent(index: CodeIndex, query: string, limit = 10): IntentHit[] {
+export function rankIntent(index: CodeIndex, query: string, limit = 10, opts: RankOptions = {}): IntentHit[] {
   const docs = buildCorpus(index);
   const qTerms = [...new Set(tokenize(query))];
   if (!qTerms.length || !docs.length) return [];
@@ -81,6 +101,7 @@ export function rankIntent(index: CodeIndex, query: string, limit = 10): IntentH
     }
     if (score > 0) hits.push({ file: d.file, line: d.line, name: d.name, kind: d.kind, score });
   }
-  hits.sort((a, b2) => b2.score - a.score || a.file.localeCompare(b2.file));
+  const tier = (h: IntentHit) => (opts.deprioritizeTests && h.kind === "test" ? 1 : 0);
+  hits.sort((a, b2) => tier(a) - tier(b2) || b2.score - a.score || a.file.localeCompare(b2.file));
   return hits.slice(0, limit);
 }

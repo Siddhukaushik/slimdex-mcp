@@ -31,34 +31,65 @@ export interface StatsFile {
 
 const empty = (): StatsFile => ({ version: 1, since: new Date().toISOString(), tools: {} });
 
-let cache: StatsFile | null = null;
-let flushTimer: NodeJS.Timeout | null = null;
+interface RootState {
+  data: StatsFile;
+  // Counters for THIS process only, tracked alongside the cumulative ones.
+  //
+  // stats.json accumulates until someone runs `stats reset`, so "422k chars"
+  // silently spanned every earlier session on the repo and could not be
+  // attributed to the work in front of you. Tracked as its own tally rather
+  // than differenced from a start-of-process snapshot, because maxChars cannot
+  // be recovered by subtraction — an all-time max set last week tells you
+  // nothing about this session's largest response.
+  session: StatsFile;
+  flushTimer: NodeJS.Timeout | null;
+}
+
+const states = new Map<string, RootState>();
+
+function key(root: string): string {
+  return path.resolve(root);
+}
 
 function file(root: string): string {
   return path.join(root, ".slimdex", "stats.json");
 }
 
 export async function loadStats(root: string): Promise<StatsFile> {
-  if (cache) return cache;
+  const rootKey = key(root);
+  const hit = states.get(rootKey);
+  if (hit) return hit.data;
   try {
     const raw = await fs.readFile(file(root), "utf8");
     const parsed = JSON.parse(raw);
     if (parsed && parsed.version === 1 && parsed.tools) {
-      cache = parsed as StatsFile;
-      return cache;
+      const data = parsed as StatsFile;
+      states.set(rootKey, { data, session: empty(), flushTimer: null });
+      return data;
     }
   } catch {
     /* fresh */
   }
-  cache = empty();
-  return cache;
+  const data = empty();
+  states.set(rootKey, { data, session: empty(), flushTimer: null });
+  return data;
+}
+
+/**
+ * Counters for this process only — what the work in front of you actually cost,
+ * as opposed to everything ever recorded for this repo.
+ */
+export async function loadSessionStats(root: string): Promise<StatsFile> {
+  await loadStats(root); // ensure the root has state
+  return states.get(key(root))!.session;
 }
 
 async function flush(root: string): Promise<void> {
-  if (!cache) return;
+  const state = states.get(key(root));
+  if (!state) return;
   try {
     await fs.mkdir(path.dirname(file(root)), { recursive: true });
-    await fs.writeFile(file(root), JSON.stringify(cache, null, 2), "utf8");
+    await fs.writeFile(file(root), JSON.stringify(state.data, null, 2), "utf8");
   } catch {
     /* stats are best-effort; never surface an error to the model */
   }
@@ -66,19 +97,27 @@ async function flush(root: string): Promise<void> {
 
 export async function record(root: string, tool: string, responseChars: number, isError: boolean): Promise<void> {
   const s = await loadStats(root);
-  const t = (s.tools[tool] ??= { calls: 0, chars: 0, maxChars: 0, errors: 0 });
-  t.calls++;
-  t.chars += responseChars;
-  if (responseChars > t.maxChars) t.maxChars = responseChars;
-  if (isError) t.errors++;
+  const state = states.get(key(root))!;
+  // Cumulative and session-only tallies move together, so the session view is
+  // exact rather than a subtraction that cannot recover maxChars.
+  for (const bucket of [s.tools, state.session.tools]) {
+    const t = (bucket[tool] ??= { calls: 0, chars: 0, maxChars: 0, errors: 0 });
+    t.calls++;
+    t.chars += responseChars;
+    if (responseChars > t.maxChars) t.maxChars = responseChars;
+    if (isError) t.errors++;
+  }
   // Debounce: a batch of 20 calls shouldn't mean 20 disk writes.
-  if (flushTimer) clearTimeout(flushTimer);
-  flushTimer = setTimeout(() => void flush(root), 1500);
-  flushTimer.unref?.();
+  if (state.flushTimer) clearTimeout(state.flushTimer);
+  state.flushTimer = setTimeout(() => void flush(root), 1500);
+  state.flushTimer.unref?.();
 }
 
 export async function resetStats(root: string): Promise<void> {
-  cache = empty();
+  const rootKey = key(root);
+  const old = states.get(rootKey);
+  if (old?.flushTimer) clearTimeout(old.flushTimer);
+  states.set(rootKey, { data: empty(), session: empty(), flushTimer: null });
   await flush(root);
 }
 

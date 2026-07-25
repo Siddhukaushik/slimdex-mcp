@@ -18,7 +18,35 @@ export interface SearchResult {
   matches: Match[]; // just the requested window
   total: number; // matches counted across the whole scan
   exact: boolean; // false when the scan cap tripped, i.e. total is a lower bound
+  timedOut: boolean; // true when the time budget stopped the scan early
 }
+
+/**
+ * Wall-clock ceiling for one scan.
+ *
+ * `pattern` reaches us straight from the caller and is compiled with the
+ * platform RegExp, so a pattern with nested quantifiers (`(a+)+$`) against the
+ * right input backtracks catastrophically and pins the event loop. This server
+ * is single-threaded and stdio-bound: one such call stops answering everything.
+ *
+ * HONEST LIMIT, stated where it is implemented: a JavaScript regex match is not
+ * interruptible. This budget is checked BETWEEN lines, so it bounds a scan that
+ * is slow across many lines — the overwhelmingly common shape — but it cannot
+ * stop a single pathological line from blocking inside one exec() call. Killing
+ * that case needs a worker thread or a backtracking-free engine (RE2), which is
+ * a dependency this project deliberately does not take. Capping input length
+ * would be the cheap alternative, but it silently changes results, and silently
+ * wrong is the one thing this codebase refuses.
+ */
+const DEFAULT_TIME_BUDGET_MS = 5000;
+
+/**
+ * Check the clock every N lines. Small, because the interval is also the
+ * overshoot: with a slow pattern, the scan runs this many more lines past the
+ * deadline before noticing. A Date.now() costs tens of nanoseconds against a
+ * per-line regex exec, so a tight interval is close to free.
+ */
+const DEADLINE_CHECK_INTERVAL = 64;
 
 function caret(text: string, col: number, len: number): string {
   const trimmedLead = text.length - text.trimStart().length;
@@ -49,6 +77,8 @@ export async function searchFiles(
     // searches get this automatically (the pattern IS the literal); regex
     // callers like find_references (\bname\b) pass the name explicitly.
     literalHint?: string;
+    /** Wall-clock ceiling for the whole scan; see DEFAULT_TIME_BUDGET_MS. */
+    timeBudgetMs?: number;
   } = {}
 ): Promise<SearchResult> {
   const max = opts.maxMatches ?? 200;
@@ -70,6 +100,10 @@ export async function searchFiles(
   const rawHint = opts.literalHint ?? (opts.regex ? undefined : pattern);
   const hint = rawHint && rawHint.length > 0 ? (opts.ignoreCase ? rawHint.toLowerCase() : rawHint) : undefined;
 
+  const deadline = Date.now() + (opts.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS);
+  let sinceCheck = 0;
+  let timedOut = false;
+
   const out: Match[] = [];
   outer: for (const rel of files) {
     let source: string;
@@ -81,6 +115,13 @@ export async function searchFiles(
     if (hint && !(opts.ignoreCase ? source.toLowerCase() : source).includes(hint)) continue;
     const lines = source.split(/\r?\n/);
     for (let i = 0; i < lines.length; i++) {
+      if (++sinceCheck >= DEADLINE_CHECK_INTERVAL) {
+        sinceCheck = 0;
+        if (Date.now() > deadline) {
+          timedOut = true;
+          break outer;
+        }
+      }
       const line = lines[i];
       re.lastIndex = 0;
       let m: RegExpExecArray | null;
@@ -97,7 +138,14 @@ export async function searchFiles(
     }
   }
 
-  return { matches: out.slice(offset, offset + max), total: out.length, exact: out.length < scanCap };
+  return {
+    matches: out.slice(offset, offset + max),
+    total: out.length,
+    // A timed-out scan never saw the whole corpus, so `total` is a lower bound
+    // for the same reason a tripped scan cap makes it one.
+    exact: out.length < scanCap && !timedOut,
+    timedOut,
+  };
 }
 
 // Opaque cursor for stable pagination. It encodes the next offset plus the

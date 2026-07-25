@@ -119,6 +119,29 @@ already knows. Sessions have no end signal — unsaved = lost.
   saved decision carries its evidence trail. Name the symbols/files in the text too —
   `brief` staleness-checks those mentions and flags the note if they've since vanished.
 
+## Width discipline (the #2 failure, after follow-through)
+Narrow tools used widely cost as much as the full reads they replaced. Two ways it
+leaks, both measured in a real session (`batch` ~149k chars, `read_lines` ~145k):
+- **`batch` costs the SUM of its sub-calls.** It saves round-trips, not tokens.
+  Batching several *wide* calls produces one huge response that arrives as a single
+  unskippable block. Batch narrow, independent lookups; if one sub-call would be big
+  on its own, make it its own call so you can bound it.
+- **`read_lines` is only cheap if the span is.** Ask for the lines you will actually
+  use. Want a whole symbol? `get_symbol_context` — it stops at the symbol boundary,
+  so it cannot over-read the way a guessed range does. Reach for `read_lines` when
+  you need an exact span that isn't a symbol.
+
+Run `stats session:true` mid-task, not just at the end: cumulative counters span every
+earlier session on the repo, so only the session view tells you what *this* work cost.
+
+## Concurrent agents (check before you edit)
+If another agent or a human may be working the same checkout, confirm it before
+editing: `changed_files` plus the file's mtime. Two writers in one worktree clobber
+each other silently — an edit tool that refuses with "file modified since read" is
+the lucky case, not the normal one. Symptom to watch for: re-reading the same file
+because its formatting keeps shifting under you. That is not a retrieval problem and
+narrower reads will not fix it; stop and resolve the conflict first.
+
 ## Session hygiene
 Finish a chunk → save to memory → start a fresh chat (don't run marathons; history
 is re-read every turn). `/compact` if one session must stay long. Don't paste large
@@ -167,10 +190,11 @@ Extraction is regex-heuristic (~96%) — a miss costs one `search_code` fallback
 it won't bridge pure synonyms with no token overlap. The server never sees the
 conversation. On a repo of tiny files, plain reads are fine — no ceremony.
 
-## Self-audit (run `stats`)
+## Self-audit (run `stats session:true`)
 Started with `index_repo` + `brief` (not a full memory dump)? follow-through M ≥ N? Any avoidable full read? Any
 whole-file rewrite? search_code below symbol-tool count? Saved every conclusion?
-Session long enough to reset?
+Session long enough to reset? Is `batch` or `read_lines` top of the chars column —
+and if so, were those calls as narrow as they could have been?
 
 ## Safety / meta tools (infrastructure, not token savers)
 - `snapshot` — copies uncommitted files to `.slimdex/snapshots/`; also auto-runs
