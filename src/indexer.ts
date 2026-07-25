@@ -176,7 +176,7 @@ async function loadConfig(root: string): Promise<SlimdexConfig> {
     // walker uses: a bare name matches any directory so called, anywhere; a
     // path-shaped entry is anchored at the repo root. Trailing slashes and
     // leading "./" are normalised away so the obvious spellings all work.
-    const raw = toPosix(String(d)).replace(/^\.\//, "").replace(/\/+$/, "");
+    const raw = toPosix(String(d).replace(/\\/g, "/")).replace(/^\.\//, "").replace(/\/+$/, "");
     if (!raw) {
       warnings.push(`empty ignoreDirs entry — ignored`);
       continue;
