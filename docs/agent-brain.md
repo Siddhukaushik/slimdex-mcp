@@ -97,6 +97,28 @@ leak — attack it, don't just optimize reads.
   mode:"mermaid" root:"<file>"` for blast radius; `find_references` (scoped) for every
   caller to update. Match reasoning effort to the task.
 
+**Why this section is the one that gets skipped.** The tools you reliably use are
+the ones you cannot proceed without — you can't edit a 3,000-line file without a
+skeleton, so the skeleton gets called thirty times. Everything above is
+*precautionary*: it pays off by preventing a mistake that hasn't happened yet, and
+misplaced confidence never announces itself. Nothing fails when you skip
+`find_tests`; you just meet the failure later as a broken build and experience it
+as normal work. Nothing fails when you find callers with `search_code` instead of
+`dep_graph`; you just don't learn what you missed. That is why reading this once per
+turn doesn't stick — a rule competes with a trained reflex and loses. `stats` prints
+the counts instead, which is the only intervention observed to interrupt it.
+
+**Two known limits of `replace_symbol`.** Ranges come from the regex index, so a
+symbol the parser doesn't span — a top-level `const X = \`…\`` holding a long
+template literal is the case that bit — can be replaced as a *one-line* range,
+leaving the old body orphaned below. It warns (`⚠ re-indexed but no symbol parsed in
+the new range`); read the response and check the reported span rather than assuming.
+An ambiguous name is refused outright, never guessed — pass `path` + `line`.
+
+**Never splice by line number.** A script that edits by index is brittle the moment
+anything above it shifts, and on a file you're editing repeatedly that is every
+edit. Addressing by name is exactly the arithmetic `replace_symbol` removes.
+
 ## Writing new code
 Skeleton the target file + 1–2 siblings to match idiom — don't full-read the module.
 `search_symbols`/`find_definition` to reuse helpers and avoid name clashes.
@@ -199,6 +221,65 @@ Started with `index_repo` + `brief` (not a full memory dump)? follow-through M �
 whole-file rewrite? search_code below symbol-tool count? Saved every conclusion?
 Session long enough to reset? Is `batch` or `read_lines` top of the chars column —
 and if so, were those calls as narrow as they could have been?
+
+`stats` answers the write side and the never-reached-for side without you having to
+remember to ask:
+
+```
+write discipline:
+  replace_symbol: 0 call(s), 0 symbol(s) rewritten by name
+  changed outside slimdex: 12 file(s)
+  pre-edit checks (find_tests/dep_graph/get_context/changed_files): 0
+  ⚠ Most edits bypassed replace_symbol. …
+  ⚠ 9 write(s) with no preceding check. …
+
+not reached for this session:
+  find_tests           names the covering tests BEFORE you change a symbol
+  dep_graph            blast radius of a shared module while it is still cheap
+  replace_symbol       rewrite by name, without re-sending the old body
+```
+
+- **"Changed outside slimdex"** — files whose *content* moved between two
+  `index_repo` runs that slimdex didn't write. An mtime bump with identical bytes
+  doesn't count, so the number isn't noise. If it dwarfs `symbol(s) rewritten by
+  name`, every whole-function rewrite in there re-sent an old body purely so a tool
+  could locate it, paid at output prices.
+- **Blind writes** — no check since the *previous* write. One `find_tests` at the
+  top of a session doesn't buy credit for edit number four, and a check that errored
+  buys nothing at all.
+- **"Not reached for"** — the failure nothing else can catch. An unused tool leaves
+  no trace, so a session that never called `find_tests` looks exactly like one where
+  nothing needed testing. Not a checklist; plenty of sessions legitimately need none
+  of it.
+
+Both are honest about their limits: slimdex never observes your edit tool, only that
+bytes moved, so a human editing in another window counts too.
+
+## Indexing hygiene (junk in the index costs every search)
+Build output crowds out real hits — one session had ~2.5MB of untracked bundles
+indexed and roughly a third of its search results were minified noise. Two defences
+run by default: the usual build directories are skipped by name, and any file whose
+lines run past ~5,000 characters is treated as minified and left out. The second
+exists because no *name* list can catch a hash-named bundle (`index-B7xK2p9q.js`)
+inside a directory called `assets` — and `assets`, `public` and `static` are
+deliberately not ignored, since real source lives in them. `index_repo` reports the
+count as `skipped(minified build output): N`.
+
+Still noisy? Add `.slimdex.json` at the repo root:
+`{"ignoreDirs": ["fixtures", "backend/src/main/resources/static/assets"]}`. A bare
+name matches any directory so called at any depth; an entry containing `/` is
+anchored at the repo root and respects directory boundaries (`src/gen` will not also
+ignore `src/generated`). Read the `config:` line `index_repo` prints rather than
+assuming the config took — it warns on unknown keys and malformed values.
+
+## If your injected instructions look short
+MCP `instructions` can be truncated silently by the client. One cut a 5,401-char
+block at ~2,000, mid-sentence, dropping every memory and editing rule — and the
+result was an agent that used slimdex read-only for an entire session while
+believing it had complete guidance. The shipped block is now written to a budget so
+it fits, but if you have never seen a rule about `replace_symbol` or `find_tests` in
+your context, that is truncation, not absence. This file does not depend on a client
+buffer; it is the copy to trust.
 
 ## Safety / meta tools (infrastructure, not token savers)
 - `snapshot` — copies uncommitted files to `.slimdex/snapshots/`; also auto-runs

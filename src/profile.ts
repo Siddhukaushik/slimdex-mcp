@@ -70,14 +70,17 @@ export const BATCH_ONLY = [
   "stats",
 ];
 
-/** The line appended to INSTRUCTIONS under lean, so nothing is unreachable in practice. */
+/**
+ * The line appended to INSTRUCTIONS under lean, so nothing is unreachable in
+ * practice. Kept terse on purpose: it is appended INSIDE the instructions
+ * budget (see INSTRUCTIONS_BUDGET in index.ts), so every char spent restating
+ * the point here is a char of actual guidance that gets truncated away.
+ */
 export function leanNote(): string {
   return (
-    `\n\nTOOL SURFACE: this server runs the lean profile — ${LEAN_TOOLS.size} tools are advertised, and these ` +
-    `${BATCH_ONLY.length} are fully working but NOT in your tool list:\n  ${BATCH_ONLY.join(", ")}\n` +
-    `Call any of them through batch: [{tool:"get_context",args:{name:"X"}}]. Everything above applies unchanged — ` +
-    `when the guidance says use find_tests or changed_files or digest_save, route it through batch rather than ` +
-    `skipping the step or falling back to a broad read.`
+    `\n\nLEAN PROFILE — these are fully working but NOT in your tool list: ${BATCH_ONLY.join(", ")}. ` +
+    `Reach them via batch [{tool:"find_tests",args:{…}}]; the guidance above still applies, so route the ` +
+    `step through batch rather than skipping it or falling back to a broad read.`
   );
 }
 

@@ -19,6 +19,23 @@ away at the exact moment it was about to pay. `stats` prints
 `follow-through: N skeleton(s) → M narrow read(s)`; if M < N you are doing it wrong.
 Exception: if you already know you're rewriting the whole file, skip the skeleton.
 
+**The blind-edit rule — the same leak on the write side.** The tools that get used
+are the ones you can't proceed without: you cannot edit a 3,000-line file without a
+skeleton, so the skeleton gets called thirty times. The tools that get skipped are
+*precautionary* — `find_tests`, `dep_graph`, `get_context`, `changed_files`. They
+pay off by preventing a mistake that hasn't happened yet, and misplaced confidence
+is the one thing that never announces itself. Nothing fails when you skip them, so
+nothing corrects the habit. That's the entire mechanism, and it is why reading a
+rule about them once per turn does not work: a rule competes with a trained reflex
+and loses. `stats` prints the counts instead — see the self-audit.
+
+**Read the instructions your client actually delivered.** MCP `instructions` can be
+truncated silently — one client cut a 5,401-char block at ~2,000, dropping every
+memory and editing rule, and the result was an agent that used slimdex read-only
+for a whole session while believing it had the full guidance. If you have never
+seen a rule about `replace_symbol` or `find_tests` in your injected context, that is
+truncation, not absence. This file is the copy that doesn't depend on a buffer.
+
 ## Question → tool (never a bare file read)
 | Question | Tool |
 |---|---|
@@ -36,10 +53,66 @@ Exception: if you already know you're rewriting the whole file, skip the skeleto
 | What changed in the tree? | `changed_files` |
 | What depends on this file? | `dep_graph` (`mode:"mermaid"` for blast radius) |
 | What did past sessions conclude / do? | `brief`; then `memory_get ids:[…]` |
+| What did past sessions actually *do*, if nothing was saved? | `recap` (reconstructed from the tool-call journal) |
+| Is there an architecture cheat-sheet already? | `digest_get` — read it before re-deriving the shape |
 
 Symbol-shaped questions → symbol tools, never `search_code`: plain text search
 returns same-named identifiers from unrelated files. Scope with `pathPrefix` when
 you know the area, and keep `limit` small, paging with `offset`/cursor.
+
+## Every tool, and what it saves
+All 29. A tool you've forgotten exists is one you fall back from — usually to a
+broad read, which is the cost this server exists to remove.
+
+**Orient (start here, cheapest)**
+| Tool | Saves you |
+|---|---|
+| `index_repo` | incremental; re-run like `git fetch` before trusting any search |
+| `brief` | the whole session opener — repo shape + prior conclusions, index-checked |
+| `repo_map` | dir-level counts; `path:` drills in — orientation without opening a file |
+| `recap` | what past sessions did, from the journal, even if nothing was saved |
+| `changed_files` | which symbols a dirty tree's diff lands in, without the patch |
+
+**Locate (never read a file to find something)**
+| Tool | Saves you |
+|---|---|
+| `find_definition` | where X is, exactly — not 40 grep hits |
+| `find_references` | who calls X (`pathPrefix` to scope) |
+| `search_symbols` | half-remembered name → the real one |
+| `search_intent` | you know the behaviour, not the name ("validate email") |
+| `search_code` | literal strings only; `regex:true` for `A\|B` |
+
+**Read narrowly (the core saving)**
+| Tool | Saves you |
+|---|---|
+| `get_file_skeleton` | a 3,000-line file as ~30 lines of signatures |
+| `outline_file` | same, for a file that isn't indexed yet |
+| `get_symbol_context` | one or many symbol bodies; stops at the boundary, so it can't over-read |
+| `read_lines` | an exact non-symbol span |
+| `context_pack` | a whole area in ONE bundle instead of ~10 calls |
+| `get_context` | definition + callers + deps in one call |
+| `dep_graph` | blast radius before a shared-module change |
+
+**Write and verify (output costs ~4–5× input)**
+| Tool | Saves you |
+|---|---|
+| `find_tests` | the covering tests *before* the edit, not a broken build after |
+| `replace_symbol` | rewrite by name — the old body is never re-sent to locate it |
+| `snapshot` | pre-edit safety net in `.slimdex/snapshots/` |
+
+**Carry across sessions (the biggest saving of all)**
+| Tool | Saves you |
+|---|---|
+| `memory_save` | the only thing that survives this chat |
+| `memory_get` / `memory_list` / `memory_search` | expand, browse, and avoid duplicating facts |
+| `memory_delete` | a store of stale notes is worse than an empty one |
+| `digest_save` / `digest_get` | an architecture cheat-sheet the next session reads instead of re-deriving |
+
+**Meta**
+| Tool | Saves you |
+|---|---|
+| `batch` | round-trips — but it costs the SUM of its sub-calls, so batch NARROW |
+| `stats` | the audit: follow-through, write discipline, and what you never reached for |
 
 ## Memory — how to save so it's worth having
 `memory_save` the moment something is confirmed: a decision and WHY, a non-obvious
@@ -81,11 +154,42 @@ blobs (logs, diffs, dumps) — they are re-read forever; summarize instead. Keep
 MCP setup stable within a session (churn breaks the prompt cache), and disconnect
 servers you aren't using.
 
+## Editing — the half that gets skipped
+Reading discipline is the famous part and the cheaper half. Output costs ~4–5× input,
+so an undisciplined edit wastes more than an undisciplined read.
+
+| Before you change a symbol | Tool | What it buys |
+|---|---|---|
+| Which tests cover it? | `find_tests name:"X"` | run only those, or SEE nothing covers it — that's risk, and you want it *before* the edit, not from a broken build |
+| Who breaks if I change the shape? | `get_context name:"X"` | definition + callers + deps in one call |
+| Is this a shared module? | `dep_graph mode:"mermaid" root:"<file>"` | blast radius before, not after |
+| What's already dirty? | `changed_files` | which symbols the diff lands in, without pulling the patch in |
+
+**Rewriting a whole function/class/method → `replace_symbol name:"X" body:"…"`.**
+Addressed by NAME: you never re-send the old body just so a tool can locate the
+change. That waste scales with the size of what you're replacing, and it is paid in
+output tokens. It snapshots first, re-indexes after, and reports the new line span,
+so you don't re-read to verify either. Several at once: `edits:[{name,body},…]`.
+
+Use a generic find-and-replace only for genuinely partial changes (a line, a
+condition, a string). **Never splice by line number** — indices go stale the moment
+anything above them shifts, which is precisely the arithmetic `replace_symbol`
+exists to remove.
+
+Two known limits: `replace_symbol` takes ranges from the regex index, so a symbol
+the parser doesn't span — a top-level `const X = \`…\`` holding a long template
+literal is the case that bit — can be replaced as a *one-line* range, leaving the old
+body orphaned below. It warns (`⚠ re-indexed but no symbol parsed in the new range`);
+read the response and check the reported span. And an ambiguous name is refused,
+never guessed — pass `path` + `line`.
+
 ## Writing new code
 Skeleton the target file + 1–2 siblings to match idiom — don't full-read the module.
 `search_symbols`/`find_definition` to reuse helpers and avoid name clashes.
 `find_references` on any type you extend. Write it in one focused edit, not
-draft → rewrite → rewrite.
+draft → rewrite → rewrite. Slimdex adds least here — new code has nothing to
+retrieve — but the moment you touch something that already exists, the table above
+applies.
 
 ## Bug analysis / review
 Verify every claim against the actual code before agreeing — pull the cited lines,
@@ -127,3 +231,33 @@ Opened with `index_repo` + `brief`, not a full memory dump? Follow-through M ≥
 Any avoidable full read? Any whole-file rewrite? `search_code` count below the
 symbol-tool count? Saved every conclusion? Session long enough that a reset would
 be cheaper than continuing?
+
+`stats` answers the rest for you, in two blocks you don't have to remember to check:
+
+```
+write discipline:
+  replace_symbol: 0 call(s), 0 symbol(s) rewritten by name
+  changed outside slimdex: 12 file(s)
+  pre-edit checks (find_tests/dep_graph/get_context/changed_files): 0
+  ⚠ Most edits bypassed replace_symbol. …
+  ⚠ 9 write(s) with no preceding check. …
+
+not reached for this session:
+  find_tests           names the covering tests BEFORE you change a symbol
+  dep_graph            blast radius of a shared module while it is still cheap
+  replace_symbol       rewrite by name, without re-sending the old body
+```
+
+Read them the way you read follow-through. **"Changed outside slimdex"** counts files
+whose *content* moved between two `index_repo` runs that slimdex didn't write — an
+mtime bump with identical bytes doesn't count, so it isn't noise. If it dwarfs
+`symbol(s) rewritten by name`, every whole-function rewrite in there re-sent an old
+body purely so a tool could find it, at output prices. A **blind write** has no check
+since the *previous* write; one `find_tests` at the top of a session doesn't cover
+edit number four. **"Not reached for"** is the one that catches the failure nothing
+else can: an unused tool leaves no trace, so a session that never called `find_tests`
+looks identical to one where nothing needed testing.
+
+Both are honest about their limits. The counter never sees your edit tool, only that
+bytes moved — a human editing in another window counts too. And the unused list is
+not a checklist; plenty of sessions legitimately need none of it.

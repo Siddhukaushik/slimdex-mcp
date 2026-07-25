@@ -28,7 +28,11 @@ export interface FileEntry {
 // Bumped 1 -> 2 when extraction became string/comment-aware, then 2 -> 3 when
 // per-file symbol-cap truncation became explicit. Old caches cannot say whether
 // a 2,000-symbol file was complete, so they must be rebuilt rather than reused.
-export const INDEX_VERSION = 3;
+// 4: minified build output is now detected by line shape and excluded. A v3
+// index was built before that check existed, and its entries survive on mtime
+// alone — so the bundles it already holds would never be re-examined. Bumping
+// forces one full reparse, after which they are gone.
+export const INDEX_VERSION = 4;
 
 export interface CodeIndex {
   version: number;
