@@ -168,3 +168,46 @@ describe.skipIf(!built)("replace_symbol against an index the file has outgrown",
     expect(after).toContain("// shifted");
   });
 });
+
+// A search result that knows something about itself and doesn't say it.
+describe.skipIf(!built)("pointing at the skeleton when a search is really a hunt", () => {
+  // One big file, many mentions of the same word — the exact shape of "where
+  // does this feature live", which a text search answers badly and a skeleton
+  // answers in one call.
+  const BIG = Array.from({ length: 400 }, (_, i) =>
+    i % 8 === 0 ? `function handler${i}() { return input(${i}); }` : `  // filler line ${i}`
+  ).join("\n");
+
+  it("names the file and suggests get_file_skeleton", async () => {
+    const root = await makeRepo({ "src/app.js": BIG, "src/other.js": "const input = 1;\n" });
+    const client = await connect(root);
+    await call(client, "index_repo");
+
+    const out = await call(client, "search_code", { pattern: "input", limit: 30 });
+    expect(out).toContain("get_file_skeleton");
+    expect(out).toContain("src/app.js");
+    expect(out).toMatch(/\d+ lines/);
+  });
+
+  it("stays quiet when the hits are spread across files", async () => {
+    // Scattered hits are a real text search, not a misdirected hunt. Advice
+    // that fires on everything gets ignored on the one occasion it matters.
+    const files: Record<string, string> = {};
+    for (let i = 0; i < 12; i++) files[`src/m${i}.js`] = "const input = 1;\n";
+    const root = await makeRepo(files);
+    const client = await connect(root);
+    await call(client, "index_repo");
+
+    const out = await call(client, "search_code", { pattern: "input", limit: 30 });
+    expect(out).not.toContain("get_file_skeleton");
+  });
+
+  it("stays quiet on a small file, where a plain read is fine", async () => {
+    const root = await makeRepo({ "src/tiny.js": "const input=1;\n".repeat(20) });
+    const client = await connect(root);
+    await call(client, "index_repo");
+
+    const out = await call(client, "search_code", { pattern: "input", limit: 30 });
+    expect(out).not.toContain("get_file_skeleton");
+  });
+});

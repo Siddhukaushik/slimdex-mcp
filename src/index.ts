@@ -41,7 +41,7 @@ import { takeSnapshot, newestSnapshotAgeMs } from "./snapshot.js";
 import { isTestFile } from "./testlink.js";
 import { spliceSymbol, spliceSymbols, type PlannedEdit } from "./edit.js";
 import { composeBrief } from "./brief.js";
-import { rankIntent } from "./intent.js";
+import { rankIntentDetailed } from "./intent.js";
 import { isStale, stalenessNote } from "./freshness.js";
 import { buildPack } from "./pack.js";
 import { staleCovered, formatDigest } from "./digest.js";
@@ -328,7 +328,27 @@ tool(
         ? `\n  Note: "${pattern}" contains regex characters but regex mode is OFF (search_code is literal by default). Retry with regex:true for alternation/wildcards, or use find_definition/find_references for a symbol name.`
         : `\n  Note: searched ${files.length} indexed file(s). If the file is new or just changed, run index_repo; for a symbol name, find_definition/find_references is sharper than text search.`;
     }
-    return `${t(`${matches.length} of ${totalStr} match(es)`, `${matches.length}/${totalStr}`)}${staleNote}\n${formatMatches(matches)}${next}${zeroHint}${slowNote}`;
+    // Many hits piled into one big file is the signature of "I am hunting for
+    // where a feature lives", and a text search answers that badly — it returns
+    // every mention, ranked by nothing, and you read them all. The skeleton
+    // answers it in one call. Reported from a session that ran two broad
+    // searches on a 6,380-line file, used neither, and afterwards identified the
+    // skipped skeleton as the wrong call — the information to say so was right
+    // here in the result, unsaid.
+    let concentrationHint = "";
+    if (matches.length >= 8) {
+      const perFile = new Map<string, number>();
+      for (const m of matches) perFile.set(m.file, (perFile.get(m.file) ?? 0) + 1);
+      const [topFile, topCount] = [...perFile.entries()].sort((a, b2) => b2[1] - a[1])[0];
+      const lines = index.files[topFile]?.lines ?? 0;
+      if (topCount >= Math.ceil(matches.length * 0.6) && lines >= 300) {
+        concentrationHint =
+          `\n  Note: ${topCount} of these ${matches.length} hits are in ${topFile} (${lines} lines).` +
+          ` If you are looking for WHERE something lives rather than every mention,` +
+          ` get_file_skeleton path:"${topFile}" maps it in one call.`;
+      }
+    }
+    return `${t(`${matches.length} of ${totalStr} match(es)`, `${matches.length}/${totalStr}`)}${staleNote}\n${formatMatches(matches)}${next}${zeroHint}${concentrationHint}${slowNote}`;
   }
 );
 
@@ -508,10 +528,25 @@ tool(
   },
   async ({ query, limit }) => {
     const index = await loadIndex(ROOT);
-    const hits = rankIntent(index, query, limit ?? 10);
-    if (!hits.length) return `No symbol matched the intent "${query}". Try different words, or search_code for a literal string.`;
+    const { hits, matched, unmatched } = rankIntentDetailed(index, query, limit ?? 10);
+    // Say which words were inert BEFORE the rows, whether or not anything
+    // matched: a ranked list reads as an answer, and by the time the reader
+    // reaches a footnote they have already started trusting row 1.
+    const dead = unmatched.length
+      ? `${unmatched.length} of ${matched.length + unmatched.length} query word(s) appear in no symbol here and scored nothing: ${unmatched.join(", ")}.\n`
+      : "";
+    if (!hits.length)
+      return `${dead}No symbol matched the intent "${query}". Try different words, or search_code for a literal string.`;
     const rows = hits.map((h) => `  ${h.file}:${h.line}  ${h.kind} ${h.name}  (${h.score.toFixed(2)})`);
-    return `Ranked by intent for "${query}" (BM25 score):\n${rows.join("\n")}`;
+    // One live word means the "ranking" is a single-word name search wearing a
+    // score column. Worth saying plainly — that is the shape a too-vague query
+    // takes, and it is indistinguishable from a good result by eye.
+    const thin =
+      matched.length === 1
+        ? `\nRanked on "${matched[0]}" alone — this is effectively a one-word name search, not a match on meaning.` +
+          ` If you are hunting inside one big file, get_file_skeleton maps it in one call.`
+        : "";
+    return `${dead}Ranked by intent for "${query}" (BM25 score):\n${rows.join("\n")}${thin}`;
   }
 );
 

@@ -96,10 +96,39 @@ export interface RankOptions {
  * index; rebuilds the corpus each call (O(symbols), a few ms even at 50k) so it
  * never holds a second stale structure to invalidate.
  */
+export interface IntentResult {
+  hits: IntentHit[];
+  /** Query words that appear in at least one symbol's document. */
+  matched: string[];
+  /**
+   * Query words no symbol contains. These contribute exactly zero to every
+   * score, which matters because the caller cannot tell from a ranked list that
+   * half their query was inert.
+   *
+   * Reported after a real session ran search_intent "editor input autosave
+   * render document" on a large repo, got 18 confidently-ranked symbols, and
+   * used none of them — the top hit was a slides renderer. BM25 was doing
+   * exactly what it does, on the one or two words that happened to exist. A
+   * list of 18 scored rows looks like a ranking with information in it; naming
+   * the dead words says what actually happened.
+   */
+  unmatched: string[];
+}
+
+/** Back-compat thin wrapper: the hits alone, as before. */
 export function rankIntent(index: CodeIndex, query: string, limit = 10, opts: RankOptions = {}): IntentHit[] {
+  return rankIntentDetailed(index, query, limit, opts).hits;
+}
+
+export function rankIntentDetailed(
+  index: CodeIndex,
+  query: string,
+  limit = 10,
+  opts: RankOptions = {}
+): IntentResult {
   const docs = buildCorpus(index);
   const qTerms = [...new Set(tokenize(query))];
-  if (!qTerms.length || !docs.length) return [];
+  if (!qTerms.length || !docs.length) return { hits: [], matched: [], unmatched: qTerms };
 
   const N = docs.length;
   const df = new Map<string, number>();
@@ -129,5 +158,10 @@ export function rankIntent(index: CodeIndex, query: string, limit = 10, opts: Ra
     return 0;
   };
   hits.sort((a, b2) => tier(a) - tier(b2) || b2.score - a.score || a.file.localeCompare(b2.file));
-  return hits.slice(0, limit);
+  // df is computed over the whole corpus, so this is the honest test of whether
+  // a word exists in this repo's vocabulary at all — not whether it made the
+  // top N.
+  const matched = qTerms.filter((t) => (df.get(t) ?? 0) > 0);
+  const unmatched = qTerms.filter((t) => (df.get(t) ?? 0) === 0);
+  return { hits: hits.slice(0, limit), matched, unmatched };
 }
