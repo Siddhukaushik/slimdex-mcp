@@ -23,10 +23,10 @@ import { searchFiles, formatMatches, encodeCursor, decodeCursor } from "./search
 import { buildGraph, dependents, toMermaid, nameRefEdges, mergeEdges } from "./graph.js";
 import { fileSkeleton, getSymbolContext, buildContext, enclosingSymbol } from "./intel.js";
 import { changedFiles, formatChanged, isGitRepo } from "./git.js";
-import { loadStats, loadSessionStats, formatStats, record, resetStats } from "./stats.js";
+import { loadStats, loadSessionStats, formatStats, record, resetStats, flushStatsSync } from "./stats.js";
 import { loadIndex, loadMemory, saveMemory, loadDigest, saveDigest, type MemoryFact, type DigestStore, type CodeIndex } from "./store.js";
 import { invalidateFileCache, readFileCached } from "./fscache.js";
-import { journalRecord, formatRecap, recentHints } from "./journal.js";
+import { journalRecord, formatRecap, recentHints, flushJournalSync } from "./journal.js";
 import { takeSnapshot, newestSnapshotAgeMs } from "./snapshot.js";
 import { isTestFile } from "./testlink.js";
 import { spliceSymbol, spliceSymbols, type PlannedEdit } from "./edit.js";
@@ -578,12 +578,16 @@ tool(
         .describe("Several symbol names in one call — one bounded body each. The narrow alternative to a whole-file read."),
       path: z.string().optional().describe("File path (use with line instead of name)."),
       line: z.number().int().min(1).optional().describe("Definition line (use with path)."),
+      pathPrefix: z
+        .string()
+        .optional()
+        .describe("Restrict name resolution to files under this prefix — disambiguates a duplicated name in ONE call."),
       before: z.number().int().min(0).max(20).optional(),
       after: z.number().int().min(0).max(20).optional(),
       maxLines: z.number().int().min(1).max(2000).optional().describe("Cap each returned span (default 200); tail elided with a notice."),
     },
   },
-  async ({ name, names, path: p, line, before, after, maxLines }) => {
+  async ({ name, names, path: p, line, pathPrefix, before, after, maxLines }) => {
     const index = await loadIndex(ROOT);
 
     const one = async (sym: string | undefined, fp: string | undefined, ln: number | undefined): Promise<string> => {
@@ -592,13 +596,24 @@ tool(
         file = toPosix(path.relative(ROOT, await safeResolve(fp)));
         defLine = ln;
       } else if (sym) {
-        const found: { file: string; line: number; kind: string }[] = [];
+        let found: { file: string; line: number; kind: string }[] = [];
         for (const [f, entry] of Object.entries(index.files))
           for (const s of entry.symbols) if (s.name === sym) found.push({ file: f, line: s.line, kind: s.kind });
         if (found.length === 0) return `No definition indexed for "${sym}". Run index_repo, or pass path + line explicitly.`;
+        // Narrowing here rather than making the caller round-trip: an ambiguous
+        // name used to cost a rejection plus a second, line-addressed call.
+        if (pathPrefix) {
+          const scoped = found.filter((d) => d.file.startsWith(toPosix(pathPrefix)));
+          if (scoped.length === 0)
+            return (
+              `"${sym}" is indexed, but not under "${pathPrefix}". Found in:\n` +
+              found.map((d) => `  ${d.file}:${d.line}  ${d.kind}`).join("\n")
+            );
+          found = scoped;
+        }
         if (found.length > 1)
           return (
-            `"${sym}" has ${found.length} definitions — pass path + line to pick one:\n` +
+            `"${sym}" has ${found.length} definitions — narrow with pathPrefix, or pass path + line to pick one:\n` +
             found.map((d) => `  ${d.file}:${d.line}  ${d.kind}`).join("\n")
           );
         file = found[0].file;
@@ -1368,8 +1383,51 @@ tool(
 );
 
 // ---------------------------------------------------------------------------
+/**
+ * Durable shutdown.
+ *
+ * The journal and the stats counters are both written on a DEBOUNCED, UNREF'd
+ * timer (300ms and 1.5s). Unref'd means Node is explicitly told not to stay
+ * alive for them, so when the stdio transport closed — the normal way a session
+ * ends — whatever happened in that last window was silently dropped. The last
+ * thing a session records is the part it most wants to keep, and it was exactly
+ * the part being lost.
+ *
+ * Flushes are synchronous because an exit handler cannot await a promise, and
+ * idempotent because several of these paths can fire for one shutdown.
+ */
+let alreadyFlushed = false;
+function flushAllSync(): void {
+  if (alreadyFlushed) return;
+  alreadyFlushed = true;
+  flushJournalSync(ROOT);
+  flushStatsSync(ROOT);
+}
+
+function installShutdownHooks(transport: StdioServerTransport): void {
+  process.on("exit", flushAllSync);
+  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+    // Adding a listener replaces Node's default terminate-immediately handling,
+    // so the explicit exit below is what still ends the process.
+    process.on(sig, () => {
+      flushAllSync();
+      process.exit(0);
+    });
+  }
+  // The transport closing is the case actually reported in the field. Chain
+  // rather than assign: `server.connect` installs its own onclose, and dropping
+  // that would break the SDK's cleanup.
+  const sdkOnClose = transport.onclose;
+  transport.onclose = () => {
+    flushAllSync();
+    sdkOnClose?.();
+  };
+}
+
 async function main() {
-  await server.connect(new StdioServerTransport());
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  installShutdownHooks(transport);
   const advertisedCount = profile() === "lean" ? LEAN_TOOLS.size : Object.keys(handlers).length;
   const surface =
     profile() === "lean"

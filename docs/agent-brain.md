@@ -46,6 +46,7 @@ index_repo    then    brief
 | Know what it does, not its name? | `search_intent` (BM25, no embeddings) |
 | What is X, who calls it, what does it use? | `get_context` (one call, not four) |
 | Body of X (or X, Y, Z)? | `get_symbol_context names:[...]` (up to 10) |
+| Name defined in several files? | `get_symbol_context name:"X" pathPrefix:"src"` — one call, not a rejection + retry |
 | Exact lines 40–80? | `read_lines` |
 | Who uses X? | `find_references` (+ `pathPrefix`) |
 | Which tests cover X? | `find_tests` (run those, or note X is untested) |
@@ -63,8 +64,9 @@ After `get_file_skeleton`, pull ONLY the named bodies with `get_symbol_context` 
 prints `follow-through: N skeleton(s) → M narrow read(s)` — if M < N you're wrong.
 
 The four situations that tempt a full read, and the correct narrow move:
-- **Ambiguous symbol** (common name, several defs) → `find_definition` gives all
-  candidates with `path:line`; `get_symbol_context` the right one by exact path.
+- **Ambiguous symbol** (common name, several defs) → `get_symbol_context name:"X"
+  pathPrefix:"src/api"` resolves it in ONE call. Only when you can't narrow by path:
+  `find_definition` for the candidates, then `get_symbol_context` by exact path+line.
 - **Multi-hunk edit needs nearby context** → `read_lines` the exact span you'll
   patch, not the whole file.
 - **Tool drift** (sliding into plain `read_file` "for convenience") → stay in
