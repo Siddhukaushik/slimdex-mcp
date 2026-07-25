@@ -24,18 +24,21 @@ import { buildGraph, dependents, toMermaid, nameRefEdges, mergeEdges } from "./g
 import { fileSkeleton, getSymbolContext, buildContext, enclosingSymbol } from "./intel.js";
 import { changedFiles, formatChanged, isGitRepo } from "./git.js";
 import { loadStats, formatStats, record, resetStats } from "./stats.js";
-import { loadIndex, loadMemory, saveMemory, loadDigest, saveDigest, type MemoryFact, type DigestStore } from "./store.js";
+import { loadIndex, loadMemory, saveMemory, loadDigest, saveDigest, type MemoryFact, type DigestStore, type CodeIndex } from "./store.js";
 import { readFileCached } from "./fscache.js";
 import { journalRecord, formatRecap, recentHints } from "./journal.js";
 import { takeSnapshot, newestSnapshotAgeMs } from "./snapshot.js";
 import { isTestFile } from "./testlink.js";
-import { spliceSymbol } from "./edit.js";
+import { spliceSymbol, spliceSymbols, type PlannedEdit } from "./edit.js";
 import { composeBrief } from "./brief.js";
 import { rankIntent } from "./intent.js";
 import { isStale, stalenessNote } from "./freshness.js";
 import { buildPack } from "./pack.js";
 import { staleCovered, formatDigest } from "./digest.js";
-import { TERSE, t, fileHeader, countNotice, truncNotice } from "./terse.js";
+import { terse, t, fileHeader, countNotice, truncNotice } from "./terse.js";
+import { factFull, formatFactList, PREVIEW_CHARS, SEARCH_PREVIEW_CHARS, SOFT_MAX_FACT_CHARS, HARD_MAX_FACT_CHARS } from "./memfmt.js";
+import { checkRepeat } from "./dedupe.js";
+import { advertised, profile, LEAN_TOOLS } from "./profile.js";
 
 const ROOT = path.resolve(process.env.SLIMDEX_ROOT || process.argv[2] || process.cwd());
 
@@ -56,21 +59,20 @@ function safeResolve(p: string): string {
 // into the model's context, so shipping it here means every client gets it.
 const INSTRUCTIONS = `slimdex replaces "read the whole file" with narrow retrieval. To actually save tokens:
 
-1. Start with repo_map, not a file open. On a big repo, orient at the directory level before drilling in.
-   To understand an unfamiliar AREA ('how does auth work'), use context_pack("<question>") — it runs the
-   whole exploration server-side (rank + connect + bodies) and returns ONE bounded bundle, instead of ~10
-   separate calls that each linger in the transcript and re-cost every later turn.
+1. Start with repo_map, not a file open — orient at the directory level before drilling in. To
+   understand an unfamiliar AREA ('how does auth work'), use context_pack("<question>"): it runs the
+   whole exploration server-side (rank + connect + bodies) and returns ONE bounded bundle, instead of
+   ~10 separate calls that each linger in the transcript and re-cost every later turn.
 2. Run index_repo liberally — it only reparses files whose mtime changed, so treat it like \`git fetch\`,
-   not a one-time setup step. Re-run it before trusting a search if anything else may have touched the repo.
+   not one-time setup. Re-run before trusting a search if anything else may have touched the repo.
 3. get_file_skeleton before any full read of a file over ~300 lines — then FOLLOW THROUGH: pull the
    bodies you need with get_symbol_context (names:[...] takes several in one call) or read_lines.
    Falling back to a whole-file read after a skeleton throws the saving away at the exact moment it
    was about to pay; the skeleton told you where everything is, so read only that.
-4. For anything symbol-shaped use find_definition / find_references / get_symbol_context, not search_code.
-   Plain text search on a large codebase returns same-named identifiers from unrelated files.
-   Reserve search_code for real string/text searches. When you know WHAT the code does but not its
-   name, use search_intent (BM25 over symbol names — 'validate email' → validateEmail) instead of
-   guessing search_code patterns.
+4. For anything symbol-shaped use find_definition / find_references / get_symbol_context, not
+   search_code — plain text search returns same-named identifiers from unrelated files. Reserve
+   search_code for real string searches. Know WHAT the code does but not its name? search_intent
+   (BM25 over symbol names — 'validate email' → validateEmail), not guessed search_code patterns.
 5. Prefer one get_context(name, include:[...]) over chaining find_definition + find_references + dep_graph.
 6. Scope search_code and find_references with pathPrefix when you already know the rough area.
 7. Before refactoring a shared module, run dep_graph mode:"mermaid" root:"<file>" to see the blast radius.
@@ -84,33 +86,35 @@ MEMORY — this is what makes a new chat start informed instead of blank:
     repo summary + where recent sessions were digging (from the automatic journal) + every saved
     conclusion CHECKED against the current index, so stale notes are flagged (✓ live / ⚠ maybe stale)
     instead of trusted blindly. It folds memory_list + recap together; drop to those two (in one
-    batch call) only when you want the raw, unsynthesized lists.
-11. memory_save anything durable the moment you learn it — an architectural decision and WHY, a
-    non-obvious constraint, a gotcha that cost you time, where a surprising thing lives, a convention
-    the code implies but never states. Tag it so memory_search finds it later.
-    Work-in-progress COUNTS: confirmed bugs, findings, half-done fixes, agreed next steps. Save each
-    one when it is confirmed, not "at the end" — sessions never announce their end; the user simply
-    opens a new chat, and anything unsaved is gone. A findings list that dies with the tab was the
-    single most expensive loss observed in real use.
-12. Do NOT save what the code already says. A symbol's location is what the index is for; re-run
-    index_repo instead. Memory is for the things reading the code cannot tell you.
-13. Correct rather than duplicate: memory_search before saving, and memory_delete facts that turn out
-    to be wrong. A store full of stale or repeated notes is worse than an empty one.
-13b. Once you understand the repo's shape, digest_save a compact architecture cheat-sheet (modules, key
-    flows, entry points, conventions) with \`covers\` set to the areas it describes. digest_get reads it
-    back with a freshness verdict, so the NEXT session reads a page instead of re-exploring the code —
-    and is told if a covered file changed since. This is the single biggest cross-session saving.
+    batch call) only when you want the raw, unsynthesized lists. Facts come back as previews; expand
+    only what matters with memory_get ids:[...]. Never open a session with full:true.
+11. memory_save anything durable the moment you learn it — a decision and WHY, a non-obvious
+    constraint, a gotcha that cost you time, where a surprising thing lives, a convention the code
+    implies but never states. Tag it so memory_search finds it. Work-in-progress COUNTS: confirmed
+    bugs, findings, half-done fixes, next steps — saved when confirmed, NOT "at the end". Sessions
+    never announce their end; the user just opens a new chat, and anything unsaved is gone (a
+    findings list dying with the tab was the most expensive loss observed in real use). Lead with the
+    conclusion: later sessions see the first ~150 chars, so put the answer first and keep one fact to
+    one thing.
+12. Do NOT save what the code already says — a symbol's location is what the index is for. Memory is
+    for what reading the code cannot tell you.
+13. Correct rather than duplicate: memory_search before saving, memory_delete what turns out wrong. A
+    store full of stale notes is worse than an empty one.
+13b. Once you know the repo's shape, digest_save a compact architecture cheat-sheet (modules, flows,
+    entry points, conventions) with \`covers\` set to the areas it describes — the NEXT session reads a
+    page instead of re-exploring, and is told if a covered file changed. Biggest cross-session saving.
 
 EDITING — the output side, where tokens actually cost the most (≈4-5x input):
 
-14. Before you change a symbol, run find_tests on it. It tells you which tests exercise it — run
-    exactly those instead of the whole suite, or SEE that nothing covers it and treat that as risk
-    before editing, not after.
+14. Before changing a symbol, find_tests on it: run exactly the tests that cover it instead of the
+    whole suite, or SEE that nothing covers it and treat that as risk before editing, not after.
 15. To rewrite a whole function/class/method, use replace_symbol name:"X" body:"..." — do NOT re-send
-    the old code just so an edit tool can locate the change. slimdex already knows where X is; you emit
-    only the new body. The file is snapshotted first and re-indexed after, and the response reports the
-    new line span so you don't re-read to verify. Patch the symbols you pulled; never re-emit a whole
-    file to change a few lines.`;
+    the old code just so an edit tool can locate the change. slimdex knows where X is; you emit only
+    the new body. The file is snapshotted first, re-indexed after, and the response reports the new
+    line span so you don't re-read to verify. Never re-emit a whole file to change a few lines.
+16. Changing several symbols? Send them as replace_symbol edits:[{name,body},…] — one snapshot, one
+    re-index, one response, instead of N calls that each re-state the plan and re-pay the per-turn
+    overhead. Refused as a whole if any target is ambiguous or two edits overlap.`;
 
 // ---------------------------------------------------------------------------
 // Handler registry. Each handler returns a plain string. Registering through
@@ -123,16 +127,31 @@ const handlers: Record<string, Handler> = {};
 const server = new McpServer({ name: "slimdex", version: "0.9.0" }, { instructions: INSTRUCTIONS });
 
 function tool(name: string, meta: { title: string; description: string; inputSchema: any }, fn: Handler) {
+  // Always registered as a handler, even when the profile hides it from
+  // tools/list: `batch` dispatches through this registry, so a lean surface
+  // costs schema chars without costing capability.
   handlers[name] = fn;
+  if (!advertised(name)) return;
   server.registerTool(name, meta, async (args: any) => {
+    const argObj = (args ?? {}) as Record<string, unknown>;
+    // Identical call, unchanged file and index? The body is already in the
+    // transcript; point at it rather than paying for it twice. Fails open.
+    const repeat = await checkRepeat(ROOT, name, argObj);
+    if (repeat.notice) {
+      void record(ROOT, name, repeat.notice.length, false);
+      void journalRecord(ROOT, name, args);
+      return text(repeat.notice);
+    }
+
     let out: string;
     let failed = false;
     try {
-      out = await fn(args ?? {});
+      out = await fn(argObj);
     } catch (e) {
       out = `Err: ${(e as Error).message}`; // terse: model doesn't debug our server
       failed = true;
     }
+    if (!failed) repeat.remember?.(out);
     void record(ROOT, name, out.length, failed);
     void journalRecord(ROOT, name, args); // automatic continuity breadcrumb; never throws
     return text(out);
@@ -366,7 +385,7 @@ tool(
     hits.sort((a, b) => a.rank - b.rank || a.name.length - b.name.length || a.name.localeCompare(b.name));
     const shown = hits.slice(0, lim);
     const rows = shown.map((h) =>
-      TERSE ? `  ${h.file}:${h.line}:${h.col} ${h.kind} ${h.name}` : `  ${h.file}:${h.line}:${h.col}  ${h.kind.padEnd(9)} ${h.name}`
+      terse() ? `  ${h.file}:${h.line}:${h.col} ${h.kind} ${h.name}` : `  ${h.file}:${h.line}:${h.col}  ${h.kind.padEnd(9)} ${h.name}`
     );
     const more = hits.length > shown.length ? `\n  … ${hits.length - shown.length} more; raise limit or narrow with kind/pathPrefix` : "";
     return `${t(`${shown.length} of ${hits.length} symbol(s) matching "${query}":`, `${shown.length}/${hits.length} "${query}":`)}\n${rows.join("\n")}${more}`;
@@ -417,11 +436,10 @@ tool(
   {
     title: "Which tests exercise a symbol",
     description:
-      "The regression-coverage question dep_graph can't answer: of everything that references a symbol, which references " +
-      "live in TEST files. Answers 'if I change calculateTax, which tests will catch a break' — run exactly those instead " +
-      "of the whole suite. If NOTHING tests it, that's surfaced as a risk before you edit, not discovered after. A file " +
-      "counts as a test by path convention (*.test.*, *.spec.*, __tests__/, test_*.py, *_test.go …) or by containing an " +
-      "indexed describe/it/test title. Textual like find_references, so same honest caveat: same-named identifiers can slip in.",
+      "Of everything that references a symbol, which references live in TEST files: 'if I change calculateTax, which " +
+      "tests catch a break' — run exactly those, not the whole suite. Nothing testing it is surfaced as risk BEFORE you " +
+      "edit. Test files are detected by convention (*.test.*, *.spec.*, __tests__/, test_*.py, *_test.go …) or an indexed " +
+      "describe/it title. Textual, so same caveat as find_references: same-named identifiers can slip in.",
     inputSchema: {
       name: z.string(),
       pathPrefix: z.string().optional(),
@@ -466,9 +484,8 @@ tool(
     description:
       "When you know WHAT the code does but not its name: a natural-language query ranked against every indexed symbol " +
       "by BM25 over tokenized names (camelCase/snake_case split), kinds and filenames — so 'validate user email' surfaces " +
-      "validateEmail / emailValidator / checkUserAddress. The featherweight answer to semantic search: no embeddings, no " +
-      "model, no extra index to keep fresh — instant and offline, and the scores are explainable, not an opaque cosine. " +
-      "For an exact/partial name use search_symbols; for a literal string use search_code; this is for 'the thing that…'.",
+      "validateEmail / emailValidator / checkUserAddress. Matches WORDING, not meaning. For an exact/partial name use " +
+      "search_symbols; for a literal string use search_code; this is for 'the thing that…'.",
     inputSchema: {
       query: z.string().describe("What the code does, in words — 'parse the config file', 'retry a failed request'."),
       limit: z.number().int().min(1).max(50).optional().describe("Top matches to return (default 10)."),
@@ -595,49 +612,76 @@ tool(
       "re-send the old body just to locate the edit, which is where output tokens (≈4-5x input) leak on every change. " +
       "The symbol's line range comes from the index; the file is SNAPSHOTTED first (rollback under .slimdex/snapshots), " +
       "then re-indexed, and the response reports the new line span so you don't re-read to verify. Ambiguous or unknown " +
-      "names are refused, never guessed. `body` must be the complete replacement definition, indented to sit in the file.",
+      "names are refused, never guessed. `body` must be the complete replacement definition, indented to sit in the file. " +
+      "`edits:[…]` applies several in one call — one snapshot, one re-index, one response; refused as a whole if any " +
+      "target is ambiguous or two edits overlap, so nothing is half-applied.",
     inputSchema: {
       name: z.string().optional().describe("Symbol to replace, resolved via the index."),
       path: z.string().optional().describe("File path (use with line instead of name)."),
       line: z.number().int().min(1).optional().describe("Definition line (use with path)."),
-      body: z.string().describe("The complete new definition, replacing the old one verbatim."),
+      body: z.string().optional().describe("The complete new definition, replacing the old one verbatim."),
+      edits: z
+        .array(
+          z.object({
+            name: z.string().optional(),
+            path: z.string().optional(),
+            line: z.number().int().min(1).optional(),
+            body: z.string(),
+          })
+        )
+        .min(1)
+        .max(20)
+        .optional()
+        .describe("Several replacements, applied atomically. Each entry takes name, or path+line, plus body."),
     },
   },
-  async ({ name, path: p, line, body }) => {
+  async ({ name, path: p, line, body, edits }) => {
+    // Resolve one edit target to a repo-relative file + definition line, or a
+    // refusal string. Shared by both paths so a batch cannot resolve targets by
+    // looser rules than a single edit does.
+    type Target = { file: string; defLine: number; label: string };
+    const resolve = async (
+      index: CodeIndex,
+      spec: { name?: string; path?: string; line?: number }
+    ): Promise<Target | string> => {
+      if (spec.path && spec.line) {
+        // safeResolve blocks `..` traversal, but a symlink INSIDE the repo can
+        // still point outside it — and this tool writes to disk. Resolve real
+        // paths and confirm the target is genuinely under ROOT before writing.
+        const abs = safeResolve(spec.path);
+        try {
+          const rootReal = await fs.realpath(ROOT);
+          const targetReal = await fs.realpath(abs);
+          const rel = path.relative(rootReal, targetReal);
+          if (rel.startsWith("..") || path.isAbsolute(rel)) return `path escapes project root: ${spec.path}`;
+        } catch {
+          return `Cannot resolve ${spec.path} (does it exist?).`;
+        }
+        const file = toPosix(path.relative(ROOT, abs));
+        return { file, defLine: spec.line, label: `${file}:${spec.line}` };
+      }
+      if (spec.name) {
+        const found: { file: string; line: number }[] = [];
+        for (const [f, entry] of Object.entries(index.files))
+          for (const s of entry.symbols) if (s.name === spec.name) found.push({ file: f, line: s.line });
+        if (found.length === 0) return `No definition indexed for "${spec.name}". Run index_repo, or pass path + line.`;
+        if (found.length > 1)
+          return (
+            `"${spec.name}" has ${found.length} definitions — pass path + line to pick one, I won't guess which to overwrite:\n` +
+            found.map((d) => `  ${d.file}:${d.line}`).join("\n")
+          );
+        return { file: found[0].file, defLine: found[0].line, label: spec.name };
+      }
+      return "Provide either name, or path + line, plus body.";
+    };
+
+    if (edits?.length) return replaceMany(edits, resolve);
+
     if (typeof body !== "string" || !body.length) return "body (the complete replacement definition) is required.";
     const index = await loadIndex(ROOT);
-
-    let file: string, defLine: number;
-    if (p && line) {
-      // safeResolve blocks `..` traversal, but a symlink INSIDE the repo can
-      // still point outside it — and this tool writes to disk. Resolve real
-      // paths and confirm the target is genuinely under ROOT before writing.
-      const abs = safeResolve(p);
-      try {
-        const rootReal = await fs.realpath(ROOT);
-        const targetReal = await fs.realpath(abs);
-        const rel = path.relative(rootReal, targetReal);
-        if (rel.startsWith("..") || path.isAbsolute(rel)) return `path escapes project root: ${p}`;
-      } catch {
-        return `Cannot resolve ${p} (does it exist?).`;
-      }
-      file = toPosix(path.relative(ROOT, abs));
-      defLine = line;
-    } else if (name) {
-      const found: { file: string; line: number }[] = [];
-      for (const [f, entry] of Object.entries(index.files))
-        for (const s of entry.symbols) if (s.name === name) found.push({ file: f, line: s.line });
-      if (found.length === 0) return `No definition indexed for "${name}". Run index_repo, or pass path + line.`;
-      if (found.length > 1)
-        return (
-          `"${name}" has ${found.length} definitions — pass path + line to pick one, I won't guess which to overwrite:\n` +
-          found.map((d) => `  ${d.file}:${d.line}`).join("\n")
-        );
-      file = found[0].file;
-      defLine = found[0].line;
-    } else {
-      return "Provide either name, or path + line, plus body.";
-    }
+    const target = await resolve(index, { name, path: p, line });
+    if (typeof target === "string") return target;
+    const { file, defLine } = target;
 
     const abs = path.join(ROOT, file);
     let source: string;
@@ -666,6 +710,86 @@ tool(
     );
   }
 );
+
+/**
+ * The batched write path. Resolves every target BEFORE touching disk, refuses
+ * the whole batch on any unresolvable name or overlapping pair, then performs
+ * exactly one write per file and one re-index for the lot.
+ *
+ * Why atomic-by-batch rather than best-effort: a half-applied refactor is the
+ * worst possible state to hand back to an agent — it has to re-read everything
+ * to find out what landed, which costs more than the batching saved.
+ */
+async function replaceMany(
+  edits: { name?: string; path?: string; line?: number; body: string }[],
+  resolve: (index: CodeIndex, spec: { name?: string; path?: string; line?: number }) => Promise<{ file: string; defLine: number; label: string } | string>
+): Promise<string> {
+  const index = await loadIndex(ROOT);
+
+  const byFile = new Map<string, PlannedEdit[]>();
+  const refusals: string[] = [];
+  for (const [i, e] of edits.entries()) {
+    if (typeof e.body !== "string" || !e.body.length) {
+      refusals.push(`edit ${i + 1}: body is required.`);
+      continue;
+    }
+    const target = await resolve(index, e);
+    if (typeof target === "string") {
+      refusals.push(`edit ${i + 1}: ${target}`);
+      continue;
+    }
+    const list = byFile.get(target.file) ?? [];
+    list.push({ defLine: target.defLine, body: e.body, label: target.label });
+    byFile.set(target.file, list);
+  }
+  if (refusals.length)
+    return `Refused ${refusals.length} of ${edits.length} edit(s) — nothing was written:\n${refusals.map((r) => "  " + r).join("\n")}`;
+
+  // Compute every new file text first. An overlap or out-of-range line throws
+  // here, before any write, so the batch is still all-or-nothing.
+  const pending: { file: string; abs: string; text: string; applied: ReturnType<typeof spliceSymbols>["applied"] }[] = [];
+  for (const [file, list] of byFile) {
+    const abs = path.join(ROOT, file);
+    let source: string;
+    try {
+      source = await readFileCached(abs);
+    } catch {
+      return `Cannot read ${file} — nothing was written.`;
+    }
+    try {
+      const res = spliceSymbols(source, list);
+      pending.push({ file, abs, text: res.text, applied: res.applied });
+    } catch (e) {
+      return `${file}: ${(e as Error).message} — nothing was written.`;
+    }
+  }
+
+  // One snapshot covering every file the batch touches, then the writes.
+  const snap = await takeSnapshot(ROOT, pending.map((p) => p.file));
+  for (const p of pending) await fs.writeFile(p.abs, p.text, "utf8");
+  await buildOrRefresh(ROOT, false);
+  const fresh = await loadIndex(ROOT);
+
+  const lines: string[] = [];
+  let warnings = 0;
+  for (const p of pending) {
+    for (const a of p.applied) {
+      const parsed = (fresh.files[p.file]?.symbols ?? []).some((s) => s.line >= a.newStart && s.line <= a.newEnd);
+      if (!parsed) warnings++;
+      lines.push(
+        `  ${p.file}: ${a.label} lines ${a.oldStart}-${a.oldEnd} → ${a.newStart}-${a.newEnd}` +
+          (parsed ? "" : " ⚠ no symbol parsed in the new range — check the body is a valid declaration")
+      );
+    }
+  }
+  const snapNote = snap.files > 0 ? `snapshot saved (${snap.dir})` : "snapshot skipped (files too large or unreadable)";
+  const total = pending.reduce((n, p) => n + p.applied.length, 0);
+  return (
+    `Applied ${total} edit(s) across ${pending.length} file(s), re-indexed once. ${snapNote}.` +
+    (warnings ? ` ⚠ ${warnings} edit(s) parsed no symbol.` : "") +
+    `\n${lines.join("\n")}`
+  );
+}
 
 tool(
   "get_file_skeleton",
@@ -746,7 +870,7 @@ tool(
       const totalLines = rows.reduce((n, [, e]) => n + e.lines, 0);
       const body = shown
         .map(([f, e]) =>
-          TERSE
+          terse()
             ? `  ${f} ${e.lines}L ${e.symbols.length}sym`
             : `  ${f.padEnd(52)} ${String(e.lines).padStart(6)} lines ${String(e.symbols.length).padStart(5)} symbols`
         )
@@ -769,7 +893,7 @@ tool(
     const rows = [...buckets.entries()]
       .sort((a, b) => b[1].lines - a[1].lines)
       .map(([k, v]) =>
-        TERSE
+        terse()
           ? `  ${k} ${v.files}f ${v.lines}L ${v.symbols}sym`
           : `  ${k.padEnd(40)} ${String(v.files).padStart(5)} files ${String(v.lines).padStart(7)} lines ${String(v.symbols).padStart(6)} symbols`
       );
@@ -869,6 +993,16 @@ tool(
     inputSchema: { text: z.string(), tags: z.array(z.string()).optional() },
   },
   async ({ text: t, tags }) => {
+    // A fact is read back in preview form in every session opener, so an
+    // unbounded body becomes a permanent tax. Refuse a runaway paste outright;
+    // warn (never truncate) on a merely long one — silently dropping half of a
+    // conclusion the agent just confirmed would be far worse than a long fact.
+    if (typeof t !== "string" || !t.trim()) return "text (the conclusion to remember) is required.";
+    if (t.length > HARD_MAX_FACT_CHARS)
+      return (
+        `Refused: ${t.length} chars is not a fact, it's a document (limit ${HARD_MAX_FACT_CHARS}). ` +
+        `Save the conclusion, not the evidence — or use digest_save for an architecture write-up.`
+      );
     const mem = await loadMemory(ROOT);
     // Decision provenance: what the agent was looking at when it concluded this.
     // Best-effort — a memory must save even if the journal is empty/unreadable.
@@ -882,7 +1016,11 @@ tool(
     };
     mem.facts.push(fact);
     await saveMemory(ROOT, mem);
-    return `Saved memory ${fact.id}${fact.tags.length ? " [" + fact.tags.join(", ") + "]" : ""}.`;
+    const long =
+      t.length > SOFT_MAX_FACT_CHARS
+        ? ` (${t.length} chars — long for one fact; future sessions see the first ${PREVIEW_CHARS}, so lead with the conclusion, and prefer several focused facts over one omnibus)`
+        : "";
+    return `Saved memory ${fact.id}${fact.tags.length ? " [" + fact.tags.join(", ") + "]" : ""}.${long}`;
   }
 );
 
@@ -890,14 +1028,23 @@ tool(
   "memory_search",
   {
     title: "Search saved memory",
-    description: "Find saved memory facts by substring and/or tag.",
-    inputSchema: { query: z.string().optional(), tag: z.string().optional() },
+    description: "Find saved memory facts by substring and/or tag. Previews by default; memory_get expands one by id.",
+    inputSchema: {
+      query: z.string().optional(),
+      tag: z.string().optional(),
+      full: z.boolean().optional().describe("Whole bodies instead of previews."),
+    },
   },
-  async ({ query, tag }) => {
+  async ({ query, tag, full }) => {
     const mem = await loadMemory(ROOT);
     const q = (query ?? "").toLowerCase();
     const hits = mem.facts.filter((f) => (!q || f.text.toLowerCase().includes(q)) && (!tag || f.tags.includes(tag)));
-    return hits.length ? hits.map((f) => `[${f.id}] ${f.tags.length ? "(" + f.tags.join(",") + ") " : ""}${f.text}`).join("\n") : "No matching memory.";
+    if (!hits.length) return "No matching memory.";
+    return formatFactList([...hits].reverse(), {
+      full,
+      previewChars: SEARCH_PREVIEW_CHARS,
+      expandHint: "… previews; memory_get ids:[…] for full text.",
+    });
   }
 );
 
@@ -908,8 +1055,8 @@ tool(
     description:
       "Reconstructs prior activity from the server's own tool-call journal — most-examined files, most-looked-up " +
       "symbols, recent searches. Needs NO prior memory_save: it is recorded automatically, so it works even when the " +
-      "last session saved nothing. Call it with memory_list at the START of a session: recap = where past sessions " +
-      "looked, memory = what they concluded.",
+      "last session saved nothing. recap = where past sessions looked; memory = what they concluded. Normally use brief " +
+      "instead (it folds both in, staleness-checked); reach here for the raw journal.",
     inputSchema: {
       limit: z.number().int().min(1).max(400).optional().describe("How many recent journaled calls to summarize (default 200)."),
     },
@@ -951,11 +1098,10 @@ tool(
   {
     title: "Save the repo architecture digest",
     description:
-      "Store a compact 'how this repo works' cheat-sheet you author once — modules, key flows, entry points, " +
-      "conventions — so future sessions read a page instead of re-exploring the code to relearn the system. Pass " +
-      "`covers` (the paths/dirs it summarizes) so slimdex can tell later sessions when a covered file changed and the " +
-      "digest may be stale. Overwrites the previous digest. Save what reading the code CAN'T quickly tell you: the why " +
-      "and the shape, not a symbol list (the index already has that).",
+      "Store a compact 'how this repo works' cheat-sheet — modules, key flows, entry points, conventions — so future " +
+      "sessions read a page instead of re-exploring. Pass `covers` (the paths it summarizes) so later sessions are told " +
+      "when a covered file changed and the digest may be stale. Overwrites the previous one. Save what reading the code " +
+      "CAN'T quickly tell you: the why and the shape, not a symbol list.",
     inputSchema: {
       text: z.string().describe("The digest prose — compact, the architecture and flows, not a file dump."),
       covers: z.array(z.string()).optional().describe("Repo-relative paths/dirs this digest summarizes (omit = whole repo)."),
@@ -974,10 +1120,9 @@ tool(
   {
     title: "Read the repo architecture digest",
     description:
-      "Return the stored architecture cheat-sheet, plus a freshness verdict: each covered file is checked against when " +
-      "the digest was written, and any that changed since are flagged as reasons it may be out of date. Read this early " +
-      "in a session to understand the system without re-exploring; if it's flagged stale, re-read the changed areas and " +
-      "digest_save an update.",
+      "Return the stored architecture cheat-sheet plus a freshness verdict: covered files that changed since it was " +
+      "written are flagged as reasons it may be out of date. Read it early to understand the system without re-exploring; " +
+      "if flagged stale, re-read the changed areas and digest_save an update.",
     inputSchema: {},
   },
   async () => {
@@ -993,19 +1138,48 @@ tool(
   "memory_list",
   {
     title: "List memory",
-    description: "List saved memory facts, newest first (default 50). Use memory_search to filter a large store.",
-    inputSchema: { limit: z.number().int().min(1).max(1000).optional().describe("Max facts to return (default 50).") },
+    description:
+      "Saved facts newest-first as PREVIEWS (id, date, tags, opening clause); memory_get ids:[…] expands the ones that " +
+      "matter, full:true dumps everything. Prefer brief as the opener — same previews, staleness-checked.",
+    inputSchema: {
+      limit: z.number().int().min(1).max(1000).optional().describe("Max facts (default 50)."),
+      full: z.boolean().optional().describe("Whole bodies instead of previews — costly on a large store."),
+    },
   },
-  async ({ limit }) => {
+  async ({ limit, full }) => {
     const mem = await loadMemory(ROOT);
     if (!mem.facts.length) return "No memory saved yet.";
     const lim = limit ?? 50;
     // Newest first: recent decisions supersede old ones, so they should be the
     // first thing a fresh session reads — and the part that survives a cap.
     const shown = [...mem.facts].reverse().slice(0, lim);
-    const rows = shown.map((f) => `[${f.id}] ${f.tags.length ? "(" + f.tags.join(",") + ") " : ""}${f.text}`);
+    const body = formatFactList(shown, { full, expandHint: "… previews; memory_get ids:[…] for full text." });
     const more = mem.facts.length > lim ? `\n… ${mem.facts.length - lim} older fact(s); raise limit or memory_search.` : "";
-    return rows.join("\n") + more;
+    return body + more;
+  }
+);
+
+tool(
+  "memory_get",
+  {
+    title: "Read saved facts in full",
+    description:
+      "Full text of specific facts by id, with the provenance note of what was being examined when each was saved. The " +
+      "expansion half of the preview model: triage cheaply with brief/memory_list, expand only what you need.",
+    inputSchema: { ids: z.array(z.string()).min(1).max(20).describe("Fact ids from memory_list/brief/memory_search.") },
+  },
+  async ({ ids }) => {
+    const mem = await loadMemory(ROOT);
+    const out: string[] = [];
+    const missing: string[] = [];
+    for (const id of ids) {
+      const f = mem.facts.find((x) => x.id === id);
+      if (f) out.push(factFull(f));
+      else missing.push(id);
+    }
+    if (!out.length) return `No memory with id ${missing.join(", ")}. memory_list shows current ids.`;
+    const miss = missing.length ? `\n(no such id: ${missing.join(", ")})` : "";
+    return out.join("\n\n") + miss;
   }
 );
 
@@ -1057,7 +1231,12 @@ tool(
 // ---------------------------------------------------------------------------
 async function main() {
   await server.connect(new StdioServerTransport());
-  console.error(`slimdex-mcp v0.9.0 ready. root=${ROOT}  tools=${Object.keys(handlers).length}`);
+  const advertisedCount = profile() === "lean" ? LEAN_TOOLS.size : Object.keys(handlers).length;
+  const surface =
+    profile() === "lean"
+      ? `tools=${advertisedCount} advertised (lean profile; ${Object.keys(handlers).length} total, all reachable via batch)`
+      : `tools=${Object.keys(handlers).length}`;
+  console.error(`slimdex-mcp v0.9.0 ready. root=${ROOT}  ${surface}`);
   // Opt-in auto-reindex on file change. Off unless SLIMDEX_WATCH is truthy.
   if (["1", "true", "yes"].includes((process.env.SLIMDEX_WATCH || "").toLowerCase())) {
     const { startWatcher } = await import("./watch.js");

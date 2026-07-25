@@ -65,7 +65,10 @@ explicitly), callers are capped by `callerLimit`, and the response is bounded
 by `maxChars` (default 12,000). Every cap that trips prints an explicit notice
 (`showing 3 of 68`, `truncated at maxChars=...`) rather than dropping data
 silently. `get_symbol_context` caps its span with `maxLines` the same way, and
-`memory_list` returns the newest 50 facts unless told otherwise.
+`memory_list` returns the newest 50 facts unless told otherwise, as ~150-char
+previews rather than whole bodies (`memory_get ids:[...]` expands them,
+`full:true` dumps everything). On an 18-fact store that is the difference
+between ~4,100 and ~18,600 chars in the call every session opens with.
 
 ### Config: `<root>/.slimdex.json` (optional)
 
@@ -429,7 +432,9 @@ node smoke-test.mjs "C:/path/to/some/repo"   # any other
 | `SLIMDEX_ROOT` | Repo to index (or pass as the first CLI arg; defaults to cwd) |
 | `SLIMDEX_WATCH` | Set to `1` to auto-reindex on file save (native watcher, no deps) |
 | `SLIMDEX_PARSER` | Parser backend; only `regex` exists today |
-| `SLIMDEX_TERSE` | Set to `1` for terser response text: shorter headers and no column padding in `search_code`, `find_definition`, `search_symbols`, `find_references`, `repo_map`, `read_lines`. Default output is byte-identical to before. |
+| `SLIMDEX_PRETTY` | Set to `1` to restore the verbose, human-aligned rendering: longer headers and column padding in `search_code`, `find_definition`, `search_symbols`, `find_references`, `repo_map`, `read_lines`, `outline_file`. Terse is the **default** — that padding is context the model pays for in every later turn. `SLIMDEX_TERSE=0` does the same thing. |
+| `SLIMDEX_PROFILE` | `lean` advertises 15 tools instead of 29, cutting the tool schemas re-sent on every turn from ~22,300 to ~12,000 chars. Hidden tools remain fully callable through `batch`, so this costs advertised surface, never capability. Default `full`. |
+| `SLIMDEX_NO_DEDUPE` | Set to `1` to disable repeat-response suppression (a second identical `read_lines`/`get_file_skeleton`/`outline_file` on an unchanged file answers with a pointer to the earlier call instead of the body; a third identical call re-emits in full). |
 
 ## The persistent cache
 
