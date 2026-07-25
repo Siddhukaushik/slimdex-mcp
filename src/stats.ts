@@ -79,6 +79,25 @@ export async function loadStats(root: string): Promise<StatsFile> {
  * Counters for this process only — what the work in front of you actually cost,
  * as opposed to everything ever recorded for this repo.
  */
+/**
+ * Zero the session tally, leaving the all-time counters untouched.
+ *
+ * "Session" here means "since this process started", and an MCP server is
+ * long-lived — one process serves many chats. So `session:true` alone answers
+ * "since the server booted", which across a day of work is nearly as useless as
+ * the cumulative number it was meant to replace: a reviewer measuring one audit
+ * got a figure spanning three.
+ *
+ * This is the missing half. Call it when a task begins and `session:true` at
+ * the end, and the difference is that task. `reset` cannot serve this purpose —
+ * it destroys the repo's all-time history, which is the one number you cannot
+ * reconstruct.
+ */
+export async function checkpointStats(root: string): Promise<void> {
+  await loadStats(root); // ensure the root has state
+  states.get(key(root))!.session = empty(); // `since` becomes now
+}
+
 export async function loadSessionStats(root: string): Promise<StatsFile> {
   await loadStats(root); // ensure the root has state
   return states.get(key(root))!.session;

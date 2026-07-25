@@ -23,7 +23,7 @@ import { searchFiles, formatMatches, encodeCursor, decodeCursor } from "./search
 import { buildGraph, dependents, toMermaid, nameRefEdges, mergeEdges } from "./graph.js";
 import { fileSkeleton, getSymbolContext, buildContext, enclosingSymbol } from "./intel.js";
 import { changedFiles, formatChanged, isGitRepo } from "./git.js";
-import { loadStats, loadSessionStats, formatStats, record, resetStats, flushStatsSync } from "./stats.js";
+import { loadStats, loadSessionStats, checkpointStats, formatStats, record, resetStats, flushStatsSync } from "./stats.js";
 import { loadIndex, loadMemory, updateMemory, loadDigest, saveDigest, type MemoryFact, type DigestStore, type CodeIndex } from "./store.js";
 import { invalidateFileCache, readFileCached } from "./fscache.js";
 import { journalRecord, formatRecap, recentHints, flushJournalSync } from "./journal.js";
@@ -1105,24 +1105,34 @@ tool(
       "Per-tool call counts and response sizes recorded to <root>/.slimdex/stats.json. Reported in characters, not " +
       "tokens — char/4 estimates are unreliable across tokenizers, so this measures what it can measure honestly. " +
       "Use it to see which tool is actually producing your context, and to tune limits. Counters are CUMULATIVE " +
-      "across every session on this repo until reset; pass session:true for what the current run alone cost.",
+      "across every session on this repo until reset. To measure ONE task: call checkpoint:true when you start, " +
+      "then session:true when you finish — the server is long-lived, so session:true alone means 'since the server " +
+      "booted', which can span several chats.",
     inputSchema: {
-      reset: z.boolean().optional().describe("Clear the counters instead of reporting them."),
+      reset: z.boolean().optional().describe("Clear ALL counters, including the repo's all-time history."),
+      checkpoint: z
+        .boolean()
+        .optional()
+        .describe("Zero the session tally only (all-time history untouched). Call at the start of a task."),
       session: z
         .boolean()
         .optional()
-        .describe("Report only what this server process has recorded, not the repo's all-time totals."),
+        .describe("Report what this process recorded since it started, or since the last checkpoint."),
     },
   },
-  async ({ reset, session }) => {
+  async ({ reset, checkpoint, session }) => {
     if (reset) {
       await resetStats(ROOT);
-      return "Stats reset.";
+      return "Stats reset — all-time counters cleared.";
+    }
+    if (checkpoint) {
+      await checkpointStats(ROOT);
+      return "Session counters zeroed; all-time history kept. Do the work, then call stats session:true to see what it cost.";
     }
     if (session) {
       const s = await loadSessionStats(ROOT);
-      if (!Object.keys(s.tools).length) return "No tool calls recorded yet in this session.";
-      return `THIS SESSION only (since ${s.since}):\n${formatStats(s)}`;
+      if (!Object.keys(s.tools).length) return "No tool calls recorded since the last checkpoint (or since this server started).";
+      return `SINCE ${s.since} (this process / last checkpoint — not the repo's all-time totals):\n${formatStats(s)}`;
     }
     return formatStats(await loadStats(ROOT));
   }
