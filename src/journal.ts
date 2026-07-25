@@ -8,7 +8,7 @@
 // Written server-side on every call (debounced), capped and rolling, so it
 // can't grow unbounded and costs nothing to the model unless recap is called.
 
-import { promises as fs } from "node:fs";
+import { promises as fs, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 const MAX_ENTRIES = 400;
@@ -82,6 +82,25 @@ export async function recentHints(root: string, n = 8): Promise<string> {
     return seen.reverse().join(", ");
   } catch {
     return "";
+  }
+}
+
+/**
+ * Synchronous last-chance write, for process exit.
+ *
+ * The debounced write above is scheduled with an UNREF'd timer, which tells
+ * Node explicitly not to stay alive for it. So when the stdio transport closed,
+ * everything journaled in the preceding 300ms was silently dropped — the last
+ * thing a session does is exactly what it most wants to remember. An exit
+ * handler cannot await a promise, so the final write has to be sync.
+ */
+export function flushJournalSync(root: string): void {
+  if (!cache || cache.root !== root) return;
+  try {
+    mkdirSync(path.dirname(file(root)), { recursive: true });
+    writeFileSync(file(root), JSON.stringify(cache.data), "utf8");
+  } catch {
+    /* journaling must never break a shutdown either */
   }
 }
 

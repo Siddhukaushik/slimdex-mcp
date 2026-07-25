@@ -13,7 +13,7 @@
 // Writes are debounced and best-effort: instrumentation must never be able to
 // fail a tool call.
 
-import { promises as fs } from "node:fs";
+import { promises as fs, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
 export interface ToolStat {
@@ -92,6 +92,23 @@ async function flush(root: string): Promise<void> {
     await fs.writeFile(file(root), JSON.stringify(state.data, null, 2), "utf8");
   } catch {
     /* stats are best-effort; never surface an error to the model */
+  }
+}
+
+/**
+ * Synchronous last-chance write, for process exit. The debounced flush waits
+ * 1.5s on an UNREF'd timer, so a session that ended before it fired lost its
+ * most recent accounting — including, ironically, the calls that measured the
+ * work you just did. An exit handler cannot await, so this one is sync.
+ */
+export function flushStatsSync(root: string): void {
+  const state = states.get(key(root));
+  if (!state) return;
+  try {
+    mkdirSync(path.dirname(file(root)), { recursive: true });
+    writeFileSync(file(root), JSON.stringify(state.data, null, 2), "utf8");
+  } catch {
+    /* instrumentation must never break a shutdown */
   }
 }
 
