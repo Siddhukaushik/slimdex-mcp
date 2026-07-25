@@ -139,6 +139,15 @@ export type ContextSection = "definition" | "signature" | "body" | "callers" | "
 // it (or use dep_graph) when reverse deps are actually the question.
 const DEFAULT_SECTIONS: ContextSection[] = ["definition", "signature", "callers", "imports"];
 
+/**
+ * Ceiling on files read while collecting callers. Reading is the real cost and
+ * there is no way to know a file lacks the name without reading it, so the only
+ * honest bound is on how many we are willing to open. Chosen to cover ordinary
+ * repos whole while keeping a monorepo from turning one get_context into a
+ * full-tree read.
+ */
+const MAX_CALLER_SCAN_FILES = 2000;
+
 // The "Intelligent Context Builder": one call that assembles what an agent
 // would otherwise gather with find_definition + read + find_references +
 // dep_graph. Per peer-review guidance, sections are OPT-IN (default: everything
@@ -193,7 +202,14 @@ export async function buildContext(
     // repos the serial version was the dominant cost of this whole call.
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const defSet = new Set(defs.map((d) => `${d.file}:${d.line}`));
-    const files = Object.keys(index.files);
+    const allFiles = Object.keys(index.files);
+    // Bounded, like every other scan here. This section used to read EVERY
+    // indexed file on every call — and `callers` is in the default section set,
+    // so a single get_context on a large repo meant a full-repo read. The cap is
+    // on files SCANNED (the actual cost is reading them), and tripping it is
+    // reported rather than silently returning a short caller list.
+    const files = allFiles.slice(0, MAX_CALLER_SCAN_FILES);
+    const scanCapped = allFiles.length > files.length;
     const hits: { file: string; line: number; enc: ReturnType<typeof enclosingSymbol> }[] = [];
     const BATCH = 24;
     for (let b = 0; b < files.length; b += BATCH) {
@@ -217,7 +233,10 @@ export async function buildContext(
       });
     }
     const shown = hits.slice(0, callerLimit).map((h) => `  ${h.file}:${h.line}${h.enc ? `  in ${h.enc.kind} ${h.enc.name}` : ""}`);
-    out.push(`## Callers / references — heuristic (showing ${shown.length} of ${hits.length})`);
+    const capNote = scanCapped
+      ? ` — scanned the first ${files.length} of ${allFiles.length} indexed files; use find_references with pathPrefix for the rest`
+      : "";
+    out.push(`## Callers / references — heuristic (showing ${shown.length} of ${hits.length}${capNote})`);
     out.push(shown.length ? shown.join("\n") : "  (none found)");
     out.push("");
   }

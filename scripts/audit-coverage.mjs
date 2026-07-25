@@ -21,7 +21,21 @@ import { extractSymbols } from "../dist/symbols.js";
 import fs from "node:fs";
 import path from "node:path";
 
+// `npm run audit` passes no arguments, which used to mean zero directories:
+// the script scanned nothing, divided 0 by 0, printed `NaN%` and exited 0 — a
+// green result that had measured absolutely nothing. Default to node_modules
+// (what the header recommends anyway) and fail loudly if there is nothing to
+// scan, so this can never again report success without doing the work.
 const roots = process.argv.slice(2);
+if (roots.length === 0) roots.push("node_modules");
+
+for (const r of roots) {
+  if (!fs.existsSync(r)) {
+    console.error(`audit: "${r}" does not exist. Pass directories to scan, e.g. node scripts/audit-coverage.mjs node_modules`);
+    process.exit(1);
+  }
+}
+
 const EXT = new Set([".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".py", ".rb", ".go", ".rs", ".java", ".php"]);
 
 // Independent ground truth: lines that a human would call a declaration.
@@ -85,6 +99,13 @@ for (const root of roots) {
 }
 
 console.log(`scanned ${scanned} files (skipped ${skipped} minified/huge)`);
+if (totalTruth === 0) {
+  console.error(
+    `audit: no declaration-bearing files found under ${roots.join(", ")} — nothing was measured. ` +
+      `Point this at a tree of real source, e.g. node_modules.`
+  );
+  process.exit(1);
+}
 console.log(`declaration-ish lines: ${totalTruth}   matched by extractor: ${totalFound}  (${((totalFound / totalTruth) * 100).toFixed(1)}%)\n`);
 console.log("ext      files    recall   zero-symbol files");
 for (const [ext, s] of Object.entries(byExt).sort((a, b) => b[1].files - a[1].files)) {

@@ -317,13 +317,18 @@ tool(
         staleNote = " (note: index changed since the cursor was issued; results may have shifted)";
     }
 
-    const { matches, total, exact } = await searchFiles(ROOT, files, pattern, {
+    const { matches, total, exact, timedOut } = await searchFiles(ROOT, files, pattern, {
       regex,
       ignoreCase,
       highlight,
       maxMatches: lim,
       offset: start,
     });
+    // A pattern that backtracks catastrophically shows up here, not as a hang.
+    const slowNote = timedOut
+      ? `\n⚠ Scan stopped at the time budget; results are partial. A regex with nested quantifiers ` +
+        `(e.g. "(a+)+") can backtrack exponentially — simplify the pattern, or scope it with pathPrefix.`
+      : "";
     const hasMore = total > start + matches.length;
     const next = hasMore ? `\nnext cursor: ${encodeCursor(start + lim, index.builtAt)}` : "";
     const totalStr = exact ? `${total}` : `${total}+ (scan cap reached)`;
@@ -336,7 +341,7 @@ tool(
         ? `\n  Note: "${pattern}" contains regex characters but regex mode is OFF (search_code is literal by default). Retry with regex:true for alternation/wildcards, or use find_definition/find_references for a symbol name.`
         : `\n  Note: searched ${files.length} indexed file(s). If the file is new or just changed, run index_repo; for a symbol name, find_definition/find_references is sharper than text search.`;
     }
-    return `${t(`${matches.length} of ${totalStr} match(es)`, `${matches.length}/${totalStr}`)}${staleNote}\n${formatMatches(matches)}${next}${zeroHint}`;
+    return `${t(`${matches.length} of ${totalStr} match(es)`, `${matches.length}/${totalStr}`)}${staleNote}\n${formatMatches(matches)}${next}${zeroHint}${slowNote}`;
   }
 );
 
@@ -1167,8 +1172,17 @@ tool(
     const recap = await formatRecap(ROOT, limit ?? 200);
     // Repo-level freshness: how many files drifted from the index since it was
     // built, so the brief itself says whether to re-index before trusting it.
+    //
+    // Batched rather than one `await` per file: these are thousands of
+    // independent stat() calls, and brief is the FIRST call of every session,
+    // so the serial version put its latency directly in front of the user.
+    const entries = Object.entries(index.files);
     let staleCount = 0;
-    for (const [f, e] of Object.entries(index.files)) if (await isStale(ROOT, f, e.mtimeMs)) staleCount++;
+    const STAT_BATCH = 64;
+    for (let i = 0; i < entries.length; i += STAT_BATCH) {
+      const flags = await Promise.all(entries.slice(i, i + STAT_BATCH).map(([f, e]) => isStale(ROOT, f, e.mtimeMs)));
+      staleCount += flags.filter(Boolean).length;
+    }
     const freshLine = staleCount
       ? `\n⚠ ${staleCount} file(s) changed since the index was built — run index_repo before trusting line numbers.`
       : "";
