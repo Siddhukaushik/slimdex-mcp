@@ -1,0 +1,93 @@
+// Tool-surface profiles.
+//
+// Measured on this repo: the tools/list payload is ~21,200 chars and the server
+// instructions another ~4,700. That is re-sent on EVERY turn, before slimdex
+// reads a single line of code — the one cost bucket that scales with turn count
+// no matter how disciplined the retrieval is.
+//
+// The honest fix is not to merge tools (renaming breaks existing configs, and
+// the descriptions carry the operating discipline — they are the product, not
+// filler). It is to let a repo expose only the surface it actually needs.
+//
+// SLIMDEX_PROFILE=lean advertises the core set and hides the rest. Crucially,
+// hidden tools are NOT removed: they stay in the handler registry, so `batch`
+// can still dispatch to every one of them. Lean pays the schema cost of ~13
+// tools while keeping the capability of all of them — the specialist tools
+// (Apex graphs, digests, snapshots) are one batch call away when a repo turns
+// out to need them.
+//
+// Default is `full`: the advertised surface is unchanged unless asked for.
+
+/**
+ * The core set. Chosen as: orient (brief/repo_map/index_repo), locate
+ * (search_code/find_definition/find_references/search_intent), read narrowly
+ * (get_file_skeleton/get_symbol_context/read_lines), the one-shot explorer
+ * (context_pack), write narrowly (replace_symbol), the escape hatch (batch),
+ * and the persistence the opener depends on (memory_save + memory_get, since brief hands back fact
+ * previews and something has to be able to expand one).
+ */
+export const LEAN_TOOLS = new Set([
+  "batch",
+  "index_repo",
+  "brief",
+  "repo_map",
+  "search_code",
+  "search_intent",
+  "find_definition",
+  "find_references",
+  "get_file_skeleton",
+  "get_symbol_context",
+  "read_lines",
+  "context_pack",
+  "replace_symbol",
+  "memory_save",
+  "memory_get",
+]);
+
+/**
+ * The tools lean hides. Kept explicitly rather than derived, because the server
+ * `instructions` are fixed at construction time — before any tool registers —
+ * and the instructions MUST name these: 11 of them are actively recommended by
+ * the guidance sent every turn (get_context, find_tests, changed_files,
+ * digest_save …). A tool the model is told to use but cannot see in its tool
+ * list is capability lost, not surface saved. A test asserts this list matches
+ * what the lean server actually hides, so it cannot drift.
+ */
+export const BATCH_ONLY = [
+  "get_context",
+  "changed_files",
+  "find_tests",
+  "dep_graph",
+  "outline_file",
+  "search_symbols",
+  "recap",
+  "memory_list",
+  "memory_search",
+  "memory_delete",
+  "digest_save",
+  "digest_get",
+  "snapshot",
+  "stats",
+];
+
+/** The line appended to INSTRUCTIONS under lean, so nothing is unreachable in practice. */
+export function leanNote(): string {
+  return (
+    `\n\nTOOL SURFACE: this server runs the lean profile — ${LEAN_TOOLS.size} tools are advertised, and these ` +
+    `${BATCH_ONLY.length} are fully working but NOT in your tool list:\n  ${BATCH_ONLY.join(", ")}\n` +
+    `Call any of them through batch: [{tool:"get_context",args:{name:"X"}}]. Everything above applies unchanged — ` +
+    `when the guidance says use find_tests or changed_files or digest_save, route it through batch rather than ` +
+    `skipping the step or falling back to a broad read.`
+  );
+}
+
+export type Profile = "full" | "lean";
+
+export function profile(): Profile {
+  return process.env.SLIMDEX_PROFILE === "lean" ? "lean" : "full";
+}
+
+/** Whether this tool appears in tools/list. Hidden tools remain batch-callable. */
+export function advertised(name: string): boolean {
+  return profile() === "full" || LEAN_TOOLS.has(name);
+}

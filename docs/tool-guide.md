@@ -412,15 +412,29 @@ memory_save(
 
 ### `memory_list`
 
-**Technical:** Facts newest-first, `limit` default 50.
+**Technical:** Facts newest-first, `limit` default 50, as previews — id, date,
+tags and the first 150 chars. `full: true` restores whole bodies.
 
-**Plain words:** Flip through the notebook. **First call of every new
-session.**
+**Plain words:** Flip through the notebook reading only the first line of each
+note. Prefer `brief`, which shows these same previews *and* tells you which ones
+still match the code. Expand the ones that matter with `memory_get`.
 
 ```
 memory_list()
-→ [1a517171] (indexer, gotcha) 2026-07-21
-  "INDEX_VERSION was bumped 1→2 because ..."
+→ [1a517171] (indexer,gotcha) 2026-07-21 INDEX_VERSION was bumped 1→2 because the old parser captured prose insi…
+… previews; memory_get ids:[…] for full text.
+```
+
+### `memory_get`
+
+**Technical:** Full text of up to 20 facts by id, plus the provenance note
+recorded when each was saved. Unknown ids are reported, not fatal.
+
+**Plain words:** The other half of previews — read the whole note once you know
+which one you want.
+
+```
+memory_get(ids: ["1a517171"])
 ```
 
 ### `memory_search`
@@ -500,7 +514,7 @@ question, not to the size of the repository.
 **A worked example.** "Why does saving memory sometimes create a `.gitignore`
 file?"
 
-1. `memory_list` — has a past session already answered this? (Say no.)
+1. `brief` — has a past session already answered this? (Say no.)
 2. `search_symbols(query: "saveMemory")` → `src/store.ts:119`.
 3. `get_file_skeleton(path: "src/store.ts")` → 11 declarations; `ensureDir`
    at line 49 looks relevant.

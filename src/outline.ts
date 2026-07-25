@@ -8,6 +8,7 @@
 // hundred tokens instead of dumping a multi-thousand-token file.
 
 import { scanLines } from "./lexer.js";
+import { pad, padNum } from "./terse.js";
 
 export interface OutlineEntry {
   line: number; // 1-indexed
@@ -128,6 +129,6 @@ export function formatOutline(path: string, entries: OutlineEntry[], totalLines:
   if (entries.length === 0) {
     return `${path} (${totalLines} lines)\n  (no declarations detected — this outliner is regex-based; use read_lines to inspect directly)`;
   }
-  const body = entries.map((e) => `  ${String(e.line).padStart(5)}  ${e.kind.padEnd(9)} ${e.text}`).join("\n");
+  const body = entries.map((e) => `  ${padNum(e.line, 5)}  ${pad(e.kind, 9)} ${e.text}`).join("\n");
   return `${path} (${totalLines} lines, ${entries.length} declarations)\n${body}`;
 }

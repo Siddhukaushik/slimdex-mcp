@@ -1,5 +1,14 @@
 # Slimdex Agent Brain
 
+> **Dropping this into a repo as CLAUDE.md / AGENTS.md? Use
+> [`agent-brain-slim.md`](agent-brain-slim.md) instead.** It is self-contained —
+> savings ladder, question→tool table, memory discipline, session hygiene, review
+> discipline, honest limits, env knobs — but carries the tool rules as dense
+> tables rather than the prose below, since the server injects a fuller version of
+> those into the model's context every turn anyway. Same coverage, ~30% smaller,
+> and the rules agents skip most often (the follow-through rule) land twice on
+> purpose. Keep this full version for reading.
+
 Operating instructions for any LLM in a repo with the slimdex MCP server.
 Goal: fewest tokens that still guarantee a correct result. This file is HOW to
 use the tools — nothing else.
@@ -17,6 +26,9 @@ index_repo    then    brief
   (from the automatic journal) + every saved conclusion CHECKED against the current
   index (✓ still live / ⚠ maybe stale). It folds `memory_list` + `recap` together.
 - Drop to `batch: [ memory_list, recap ]` only for the raw, unsynthesized lists.
+- Saved facts arrive as ~150-char previews. Expand only what you need with
+  `memory_get ids:[...]`; never open a session with `memory_list full:true` (measured
+  ~18,600 chars on an 18-fact store, re-read in every later turn).
 - `index_repo` first so `brief`'s staleness check runs against fresh symbols;
   re-run it after edits or a branch switch.
 - On a dirty tree, also `changed_files` — the diff's symbols, not the patch.
@@ -69,6 +81,13 @@ leak — attack it, don't just optimize reads.
   only the new body; you do NOT re-send the old code for a matcher to locate — slimdex
   has X's range from the index. It snapshots first and re-indexes after, and reports
   the new line span so you don't re-read to verify.
+- **Several symbols at once?** → one `replace_symbol edits:[{name,body},…]` call: one
+  snapshot, one re-index, one response, instead of N calls that each re-state the plan
+  and re-pay the per-turn overhead. The batch is refused BEFORE any write if a target
+  is ambiguous, two edits overlap, or a file isn't writable. Within one file the write
+  is atomic; across files it cannot be, so a write that fails mid-batch rolls the
+  earlier files back and tells you exactly what state each one is in. Read the response
+  rather than assuming success.
 - **A few lines inside a symbol?** → `read_lines` the exact span, patch with a small
   `Edit`/`apply_patch` hunk. Never rewrite a whole file for a few lines.
 - **Before editing X** → `find_tests X`: run exactly the tests that cover it, or see
@@ -93,6 +112,9 @@ break an internal caller. Call a rough edge a rough edge, not a vulnerability.
 decisions + WHY, constraints, gotchas, half-done work, next steps. `memory_search`
 before saving; `memory_delete` what's wrong. Don't save what the index or git
 already knows. Sessions have no end signal — unsaved = lost.
+- **Lead with the conclusion.** Later sessions read the first ~150 chars as a preview,
+  so put the answer in the opening clause and keep one fact to one thing. Over ~1,200
+  chars earns a warning; over 20,000 is refused (that is a `digest_save`, not a fact).
 - Provenance is automatic: `memory_save` records what you were just looking at, so a
   saved decision carries its evidence trail. Name the symbols/files in the text too —
   `brief` staleness-checks those mentions and flags the note if they've since vanished.
@@ -109,6 +131,29 @@ Search tools: small `limit` first, page with `offset`/cursor. `get_context`:
 `include` opt-in (add `body`/`dependents` only when needed). `get_symbol_context`:
 `maxLines`. Always `pathPrefix` when you know the area.
 
+Server-side knobs (MCP config, not per call):
+- `SLIMDEX_PROFILE=lean` — OFF by default and not recommended. It advertises 15
+  tools instead of 29 (~10,300 fewer chars per turn) but the other 14 — including
+  `get_context`, `changed_files`, `find_tests` and `digest_save`, which the guidance
+  above actively tells you to use — then have to be reached through `batch`, e.g.
+  `batch: [{tool:"find_tests",args:{name:"X"}}]`. The instructions list them under
+  that profile, so nothing is unreachable, but the indirection is a correctness risk
+  for a saving the default no longer needs. If you DO see a lean surface: route those
+  steps through `batch`; never silently skip one or fall back to a broad read.
+- Output is terse by default; `SLIMDEX_PRETTY=1` restores human-aligned padding.
+- `SLIMDEX_NO_DEDUPE=1` turns off repeat suppression.
+
+## Repeat suppression (automatic)
+A second identical `read_lines` / `get_file_skeleton` / `outline_file` answers with a
+pointer to the earlier call instead of the body — it is already in your transcript, and
+a response is paid again in every later turn. "Unchanged" means the file HASHES the
+same and the index has not been rebuilt, not merely that its timestamp looks the same.
+A third identical call re-emits in full: if you ask again after being told you already
+have it, the honest reading is that compaction dropped it.
+
+Only those three tools, and only when they were given a `path`. Name-addressed reads
+(`get_symbol_context`) resolve their file internally and are never suppressed.
+
 ## Freshness (trust a result without re-reading)
 `get_symbol_context` appends a ⚠ line only when the file changed since it was
 indexed — the located line may be off, so `index_repo` then retry. Silent when
@@ -123,7 +168,7 @@ it won't bridge pure synonyms with no token overlap. The server never sees the
 conversation. On a repo of tiny files, plain reads are fine — no ceremony.
 
 ## Self-audit (run `stats`)
-Started with memory+recap+index? follow-through M ≥ N? Any avoidable full read? Any
+Started with `index_repo` + `brief` (not a full memory dump)? follow-through M ≥ N? Any avoidable full read? Any
 whole-file rewrite? search_code below symbol-tool count? Saved every conclusion?
 Session long enough to reset?
 
