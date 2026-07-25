@@ -79,7 +79,8 @@ nothing corrects the habit — which is why reading this once per turn doesn't s
 ## Search caveats
 Symbol-shaped → symbol tools, never `search_code`: text search returns same-named
 identifiers from unrelated files. Scope with `pathPrefix`, keep `limit` small, page
-with `offset`/cursor.
+with `offset`/cursor. Same for the read tools: `get_context include:` is opt-in (add
+`body`/`dependents` only when needed), `get_symbol_context` takes `maxLines`.
 
 **"Where does this live in this huge file?" is a skeleton question, not a search
 question** — a text search returns every mention ranked by nothing. `search_code`
@@ -177,7 +178,12 @@ reads are fine.
 - A repeated identical `read_lines`/`get_file_skeleton`/`outline_file` answers with
   a pointer to the earlier call. "Unchanged" means the file HASHES the same and the
   index wasn't rebuilt. Ask a third time for the full body — the escape hatch if
-  compaction dropped it.
+  compaction dropped it. Only those three, and only when given a `path`;
+  name-addressed reads resolve their file internally and are never suppressed.
+- **Freshness: no warning means the line numbers are good.** `get_symbol_context`
+  appends a ⚠ only when the file changed since indexing (then `index_repo` and
+  retry); `brief` reports the repo-wide count. Silence is an answer — don't spend a
+  re-read confirming it.
 - `replace_symbol edits:[…]` is refused before any write if a target is ambiguous,
   two edits overlap, or a file isn't writable. Atomic within a file; across files it
   can't be, so a mid-batch failure rolls back and reports each file's exact state.
