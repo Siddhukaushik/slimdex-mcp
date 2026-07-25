@@ -31,34 +31,47 @@ export interface StatsFile {
 
 const empty = (): StatsFile => ({ version: 1, since: new Date().toISOString(), tools: {} });
 
-let cache: StatsFile | null = null;
-let flushTimer: NodeJS.Timeout | null = null;
+interface RootState {
+  data: StatsFile;
+  flushTimer: NodeJS.Timeout | null;
+}
+
+const states = new Map<string, RootState>();
+
+function key(root: string): string {
+  return path.resolve(root);
+}
 
 function file(root: string): string {
   return path.join(root, ".slimdex", "stats.json");
 }
 
 export async function loadStats(root: string): Promise<StatsFile> {
-  if (cache) return cache;
+  const rootKey = key(root);
+  const hit = states.get(rootKey);
+  if (hit) return hit.data;
   try {
     const raw = await fs.readFile(file(root), "utf8");
     const parsed = JSON.parse(raw);
     if (parsed && parsed.version === 1 && parsed.tools) {
-      cache = parsed as StatsFile;
-      return cache;
+      const data = parsed as StatsFile;
+      states.set(rootKey, { data, flushTimer: null });
+      return data;
     }
   } catch {
     /* fresh */
   }
-  cache = empty();
-  return cache;
+  const data = empty();
+  states.set(rootKey, { data, flushTimer: null });
+  return data;
 }
 
 async function flush(root: string): Promise<void> {
-  if (!cache) return;
+  const state = states.get(key(root));
+  if (!state) return;
   try {
     await fs.mkdir(path.dirname(file(root)), { recursive: true });
-    await fs.writeFile(file(root), JSON.stringify(cache, null, 2), "utf8");
+    await fs.writeFile(file(root), JSON.stringify(state.data, null, 2), "utf8");
   } catch {
     /* stats are best-effort; never surface an error to the model */
   }
@@ -72,13 +85,17 @@ export async function record(root: string, tool: string, responseChars: number, 
   if (responseChars > t.maxChars) t.maxChars = responseChars;
   if (isError) t.errors++;
   // Debounce: a batch of 20 calls shouldn't mean 20 disk writes.
-  if (flushTimer) clearTimeout(flushTimer);
-  flushTimer = setTimeout(() => void flush(root), 1500);
-  flushTimer.unref?.();
+  const state = states.get(key(root))!;
+  if (state.flushTimer) clearTimeout(state.flushTimer);
+  state.flushTimer = setTimeout(() => void flush(root), 1500);
+  state.flushTimer.unref?.();
 }
 
 export async function resetStats(root: string): Promise<void> {
-  cache = empty();
+  const rootKey = key(root);
+  const old = states.get(rootKey);
+  if (old?.flushTimer) clearTimeout(old.flushTimer);
+  states.set(rootKey, { data: empty(), flushTimer: null });
   await flush(root);
 }
 

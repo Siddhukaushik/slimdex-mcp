@@ -137,6 +137,11 @@ describe("extractSymbols — string/comment awareness", () => {
   it("still finds a generator declaration", () => {
     expect(extractSymbols("function* gen() {}").map((s) => s.name)).toContain("gen");
   });
+
+  it("does not let a backtick inside a regex literal poison later lines", () => {
+    const src = ["const tick = /[`]/;", "function findMe() {}", "class AlsoFindMe {}"].join("\n");
+    expect(extractSymbols(src).map((s) => s.name)).toEqual(expect.arrayContaining(["findMe", "AlsoFindMe"]));
+  });
 });
 
 describe("extractSymbols — depth", () => {

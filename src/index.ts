@@ -15,7 +15,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { promises as fs, constants as fsConstants } from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { outline, formatOutline } from "./outline.js";
 import { buildOrRefresh, toPosix } from "./indexer.js";
@@ -25,7 +25,7 @@ import { fileSkeleton, getSymbolContext, buildContext, enclosingSymbol } from ".
 import { changedFiles, formatChanged, isGitRepo } from "./git.js";
 import { loadStats, formatStats, record, resetStats } from "./stats.js";
 import { loadIndex, loadMemory, saveMemory, loadDigest, saveDigest, type MemoryFact, type DigestStore, type CodeIndex } from "./store.js";
-import { readFileCached } from "./fscache.js";
+import { invalidateFileCache, readFileCached } from "./fscache.js";
 import { journalRecord, formatRecap, recentHints } from "./journal.js";
 import { takeSnapshot, newestSnapshotAgeMs } from "./snapshot.js";
 import { isTestFile } from "./testlink.js";
@@ -47,11 +47,24 @@ function text(s: string) {
 }
 
 // Resolve a user-supplied path (relative or absolute) and refuse to escape ROOT.
-function safeResolve(p: string): string {
+async function safeResolve(p: string): Promise<string> {
   const abs = path.isAbsolute(p) ? p : path.join(ROOT, p);
   const rel = path.relative(ROOT, abs);
   if (rel.startsWith("..") || path.isAbsolute(rel)) throw new Error(`path escapes project root: ${p}`);
+  const [rootReal, targetReal] = await Promise.all([fs.realpath(ROOT), fs.realpath(abs)]);
+  const realRel = path.relative(rootReal, targetReal);
+  if (realRel.startsWith("..") || path.isAbsolute(realRel)) throw new Error(`path escapes project root via symlink: ${p}`);
   return abs;
+}
+
+async function changedSinceIndex(file: string, entry: CodeIndex["files"][string]): Promise<boolean> {
+  if (await isStale(ROOT, file, entry.mtimeMs)) return true;
+  try {
+    const source = await fs.readFile(path.join(ROOT, file), "utf8");
+    return createHash("sha256").update(source).digest("hex") !== entry.contentHash;
+  } catch {
+    return true;
+  }
 }
 
 // The retrieval discipline that actually produces the savings. It lived only in
@@ -124,6 +137,7 @@ EDITING — the output side, where tokens actually cost the most (≈4-5x input)
 // ---------------------------------------------------------------------------
 type Handler = (args: any) => Promise<string>;
 const handlers: Record<string, Handler> = {};
+const schemas: Record<string, z.ZodTypeAny> = {};
 // Under a reduced surface the instructions must also say what is missing and
 // how to reach it — most of the guidance above names tools lean does not
 // advertise, and unreachable-in-practice is worse than a few hundred chars.
@@ -137,6 +151,7 @@ function tool(name: string, meta: { title: string; description: string; inputSch
   // tools/list: `batch` dispatches through this registry, so a lean surface
   // costs schema chars without costing capability.
   handlers[name] = fn;
+  schemas[name] = z.object(meta.inputSchema);
   if (!advertised(name)) return;
   server.registerTool(name, meta, async (args: any) => {
     const argObj = (args ?? {}) as Record<string, unknown>;
@@ -205,6 +220,7 @@ tool(
       `Indexed ${r.totalFiles} files under ${ROOT}\n` +
       `  parsed: ${r.parsed}  reused(cache): ${r.reused}  removed: ${r.removed}` +
       (r.skipped ? `  skipped(too large): ${r.skipped}` : "") +
+      (r.truncated ? `  truncated(symbol cap): ${r.truncated}` : "") +
       `\n  symbols indexed: ${symbols}  parser: ${r.parser}\n` +
       `  config: ${r.config}${warn}\n` +
       `Cache: ${path.join(ROOT, ".slimdex", "index.json")}` +
@@ -241,7 +257,7 @@ tool(
     inputSchema: { path: z.string() },
   },
   async ({ path: p }) => {
-    const abs = safeResolve(p);
+    const abs = await safeResolve(p);
     const src = await readFileCached(abs);
     return formatOutline(toPosix(path.relative(ROOT, abs)), outline(src), src.split(/\r?\n/).length);
   }
@@ -255,7 +271,7 @@ tool(
     inputSchema: { path: z.string(), start: z.number().int().min(1), end: z.number().int().min(1) },
   },
   async ({ path: p, start, end }) => {
-    const abs = safeResolve(p);
+    const abs = await safeResolve(p);
     const lines = (await readFileCached(abs)).split(/\r?\n/);
     const s = Math.max(1, start);
     const e = Math.min(lines.length, Math.max(s, end));
@@ -361,6 +377,7 @@ tool(
   async ({ query, kind, pathPrefix, limit }) => {
     const index = await loadIndex(ROOT);
     if (Object.keys(index.files).length === 0) return "Index is empty — run index_repo first.";
+    if (!query.trim()) return "query must contain at least one non-whitespace character.";
     const q = query.toLowerCase();
 
     // Subsequence match: every char of the query appears in order. Catches
@@ -563,7 +580,7 @@ tool(
     const one = async (sym: string | undefined, fp: string | undefined, ln: number | undefined): Promise<string> => {
       let file: string, defLine: number, kind = "symbol";
       if (fp && ln) {
-        file = toPosix(path.relative(ROOT, safeResolve(fp)));
+        file = toPosix(path.relative(ROOT, await safeResolve(fp)));
         defLine = ln;
       } else if (sym) {
         const found: { file: string; line: number; kind: string }[] = [];
@@ -649,19 +666,16 @@ tool(
       spec: { name?: string; path?: string; line?: number }
     ): Promise<Target | string> => {
       if (spec.path && spec.line) {
-        // safeResolve blocks `..` traversal, but a symlink INSIDE the repo can
-        // still point outside it — and this tool writes to disk. Resolve real
-        // paths and confirm the target is genuinely under ROOT before writing.
-        const abs = safeResolve(spec.path);
+        let abs: string;
         try {
-          const rootReal = await fs.realpath(ROOT);
-          const targetReal = await fs.realpath(abs);
-          const rel = path.relative(rootReal, targetReal);
-          if (rel.startsWith("..") || path.isAbsolute(rel)) return `path escapes project root: ${spec.path}`;
+          abs = await safeResolve(spec.path);
         } catch {
           return `Cannot resolve ${spec.path} (does it exist?).`;
         }
         const file = toPosix(path.relative(ROOT, abs));
+        const entry = index.files[file];
+        if (entry && (await changedSinceIndex(file, entry)))
+          return `${file} changed since index_repo — re-index before replacing it.`;
         return { file, defLine: spec.line, label: `${file}:${spec.line}` };
       }
       if (spec.name) {
@@ -674,7 +688,10 @@ tool(
             `"${spec.name}" has ${found.length} definitions — pass path + line to pick one, I won't guess which to overwrite:\n` +
             found.map((d) => `  ${d.file}:${d.line}`).join("\n")
           );
-        return { file: found[0].file, defLine: found[0].line, label: spec.name };
+        const target = found[0];
+        if (await changedSinceIndex(target.file, index.files[target.file]))
+          return `${target.file} changed since index_repo — re-index before replacing "${spec.name}".`;
+        return { file: target.file, defLine: target.line, label: spec.name };
       }
       return "Provide either name, or path + line, plus body.";
     };
@@ -699,6 +716,7 @@ tool(
     const snap = await takeSnapshot(ROOT, [file]);
     const res = spliceSymbol(source, defLine, body);
     await fs.writeFile(abs, res.text, "utf8");
+    invalidateFileCache(abs);
     // Re-index (mtime changed -> only this file re-parses) so the new span is
     // queryable immediately and the reported line numbers are the real ones.
     await buildOrRefresh(ROOT, false);
@@ -806,6 +824,7 @@ async function replaceMany(
   for (const p of pending) {
     try {
       await fs.writeFile(p.abs, p.text, "utf8");
+      invalidateFileCache(p.abs);
       written.push(p);
     } catch (e) {
       // Mid-batch failure. Restore what we already wrote from the originals in
@@ -815,6 +834,7 @@ async function replaceMany(
       for (const done of written) {
         try {
           await fs.writeFile(done.abs, done.source, "utf8");
+          invalidateFileCache(done.abs);
         } catch {
           restoreFailed.push(done.file);
         }
@@ -864,14 +884,17 @@ tool(
     inputSchema: { path: z.string() },
   },
   async ({ path: p }) => {
-    const abs = safeResolve(p);
+    const abs = await safeResolve(p);
     const rel = toPosix(path.relative(ROOT, abs));
     const index = await loadIndex(ROOT);
     const entry = index.files[rel];
     if (!entry) return `${rel} is not indexed — run index_repo (or check the path).`;
     const src = await readFileCached(abs);
     const skel = fileSkeleton(src, entry);
-    return `${rel} skeleton (${entry.lines} lines, ${entry.symbols.length} symbols):\n${skel || "  (no declarations detected)"}`;
+    const truncation = entry.symbolsTruncated
+      ? "\n⚠ Symbol index truncated at 2000 declarations; this skeleton is partial."
+      : "";
+    return `${rel} skeleton (${entry.lines} lines, ${entry.symbols.length} symbols):${truncation}\n${skel || "  (no declarations detected)"}`;
   }
 );
 
@@ -1286,7 +1309,12 @@ tool(
         // routed through batch pays in full while the direct call does not —
         // and batch is the documented way to reach a hidden tool under a lean
         // surface, so the bypass would land exactly where it hurts most.
-        const args = c.args ?? {};
+        const parsed = schemas[c.tool].safeParse(c.args ?? {});
+        if (!parsed.success) {
+          const issue = parsed.error.issues.map((x) => `${x.path.join(".") || "args"}: ${x.message}`).join("; ");
+          throw new Error(`invalid arguments: ${issue}`);
+        }
+        const args = parsed.data;
         const repeat = await checkRepeat(ROOT, c.tool, args);
         const body = repeat.notice ?? (await handlers[c.tool](args));
         if (!repeat.notice) repeat.remember?.(body);

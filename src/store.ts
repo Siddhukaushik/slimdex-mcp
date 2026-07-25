@@ -12,17 +12,17 @@ import type { SymbolDef, ImportRef } from "./symbols.js";
 
 export interface FileEntry {
   mtimeMs: number;
+  contentHash: string;
   lines: number;
   symbols: SymbolDef[];
+  symbolsTruncated?: boolean;
   imports: ImportRef[];
 }
 
-// Bumped 1 -> 2 when symbol extraction became string/comment-aware and gained
-// depth. A v1 index on disk was built by the old extractor and is full of
-// declarations that don't exist (prose captured from inside template literals,
-// locals reported as top-level), so it must be discarded rather than reused —
-// mtime invalidation alone would keep serving the bad entries indefinitely.
-export const INDEX_VERSION = 2;
+// Bumped 1 -> 2 when extraction became string/comment-aware, then 2 -> 3 when
+// per-file symbol-cap truncation became explicit. Old caches cannot say whether
+// a 2,000-symbol file was complete, so they must be rebuilt rather than reused.
+export const INDEX_VERSION = 3;
 
 export interface CodeIndex {
   version: number;

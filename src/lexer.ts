@@ -14,6 +14,64 @@ export interface ScanState {
   stringChar: string | null; // "'", '"', or "`"
 }
 
+// ---------------------------------------------------------------------------
+// Regex literals.
+//
+// Without this, a quote character inside a regex opens a phantom string. For '
+// and " that self-corrects at end of line (see settleEol), but a BACKTICK does
+// not — template literals legitimately span lines, so `/[`]/` put the scanner
+// into a template-literal state that never ended and every subsequent line
+// masked to blanks. A file indexed to zero symbols from that line on, silently.
+//
+// Telling a regex from a division sign needs the preceding token: after a value
+// (identifier, number, `)`, `]`) a `/` divides; at the start of an expression it
+// opens a regex. That is the standard heuristic and it is what JS tooling uses.
+const REGEX_OK_AFTER = new Set("(,=:[!&|?{};+-*%^~<>".split(""));
+
+// Keywords after which a `/` still opens a regex, even though they end in a
+// word character: `return /x/`, `case /x/`, `typeof /x/`.
+const REGEX_OK_KEYWORDS = new Set([
+  "return", "typeof", "case", "in", "of", "new", "delete", "void",
+  "instanceof", "do", "else", "yield", "await",
+]);
+
+/** Would a `/` appearing after this code open a regex literal (vs. divide)? */
+function opensRegex(codeSoFar: string): boolean {
+  const trimmed = codeSoFar.replace(/\s+$/, "");
+  if (!trimmed) return true; // start of a line/expression
+  if (REGEX_OK_AFTER.has(trimmed[trimmed.length - 1])) return true;
+  const word = /([A-Za-z_$][A-Za-z0-9_$]*)$/.exec(trimmed);
+  return word ? REGEX_OK_KEYWORDS.has(word[1]) : false;
+}
+
+/**
+ * Scan a regex literal starting at the `/` on `line[start]`. Returns the index
+ * of the closing `/` and the masked body (contents blanked, length preserved),
+ * or null when there is no closing delimiter on this line — in which case the
+ * caller treats the `/` as an ordinary character rather than guessing.
+ *
+ * `/` inside a character class is literal (`/[/]/`), so class state is tracked.
+ */
+function scanRegexLiteral(line: string, start: number): { end: number; masked: string } | null {
+  let body = "";
+  let inClass = false;
+  let j = start + 1;
+  while (j < line.length) {
+    const c = line[j];
+    if (c === "\\") {
+      body += j + 1 < line.length ? "  " : " "; // preserve length
+      j += 2;
+      continue;
+    }
+    if (c === "[") inClass = true;
+    else if (c === "]") inClass = false;
+    else if (c === "/" && !inClass) return { end: j, masked: body };
+    body += " ";
+    j++;
+  }
+  return null;
+}
+
 export function newScanState(): ScanState {
   return { inBlockComment: false, stringChar: null };
 }
@@ -52,6 +110,13 @@ export function braceDelta(line: string, st: ScanState): { open: number; close: 
       continue;
     }
     if (ch === "/" && next === "/") break; // line comment: ignore the rest
+    if (ch === "/" && opensRegex(line.slice(0, i))) {
+      const regex = scanRegexLiteral(line, i);
+      if (regex) {
+        i = regex.end;
+        continue;
+      }
+    }
     if (ch === "'" || ch === '"' || ch === "`") {
       st.stringChar = ch;
       continue;
@@ -106,6 +171,14 @@ export function maskLine(line: string, st: ScanState): string {
     if (ch === "/" && next === "/") {
       out += " ".repeat(line.length - i); // blank the rest of the line
       break;
+    }
+    if (ch === "/" && opensRegex(out)) {
+      const regex = scanRegexLiteral(line, i);
+      if (regex) {
+        out += "/" + regex.masked + "/";
+        i = regex.end;
+        continue;
+      }
     }
     if (ch === "'" || ch === '"' || ch === "`") {
       st.stringChar = ch;

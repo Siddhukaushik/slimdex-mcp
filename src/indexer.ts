@@ -4,6 +4,7 @@
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { getParser } from "./parser.js";
 import { loadIndex, saveIndex, INDEX_VERSION, type CodeIndex, type FileEntry } from "./store.js";
 
@@ -148,6 +149,7 @@ export interface IndexResult {
   removed: number;
   totalFiles: number;
   skipped: number; // over maxFileBytes
+  truncated: number; // files whose symbol list hit the safety cap
   parser: string;
   config: string; // human-readable config summary
   warnings: string[];
@@ -199,10 +201,13 @@ export async function buildOrRefresh(root: string, force = false): Promise<Index
     } catch {
       continue;
     }
+    const extracted = parser.extractSymbols(source, 2001);
     const entry: FileEntry = {
       mtimeMs: stat.mtimeMs,
+      contentHash: createHash("sha256").update(source).digest("hex"),
       lines: source.split(/\r?\n/).length,
-      symbols: parser.extractSymbols(source),
+      symbols: extracted.slice(0, 2000),
+      symbolsTruncated: extracted.length > 2000,
       imports: parser.extractImports(source),
     };
     index.files[rel] = entry;
@@ -218,6 +223,7 @@ export async function buildOrRefresh(root: string, force = false): Promise<Index
     }
   }
 
+  const truncated = Object.values(index.files).filter((entry) => entry.symbolsTruncated).length;
   await saveIndex(root, index);
   return {
     index,
@@ -226,6 +232,7 @@ export async function buildOrRefresh(root: string, force = false): Promise<Index
     removed,
     totalFiles: present.size,
     skipped,
+    truncated,
     parser: parser.name,
     config: cfg.summary,
     warnings: cfg.warnings,

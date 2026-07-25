@@ -64,7 +64,9 @@ export function extractBlock(lines: string[], startLine: number): { start: numbe
     while (end > i0 && !lines[end].trim()) end--; // trim trailing blanks
     return { start: startLine, end: end + 1 };
   }
-  return { start: startLine, end: startLine };
+  throw new Error(
+    `Refusing to treat ${startLine} as a one-line block: an opening brace did not close within ${limit - i0} lines`
+  );
 }
 
 // The symbol whose definition most immediately encloses `line`.

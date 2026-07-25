@@ -36,6 +36,7 @@ const FILES: Record<string, string> = {
     "",
     "export function unused(): void {}",
   ].join("\n"),
+  "src/stale.ts": ["export function staleTarget() {", "  return 1;", "}"].join("\n"),
   "src/app.ts": [
     'import { add } from "./math.js";',
     "",
@@ -185,6 +186,12 @@ describe.skipIf(!built)("MCP server end to end", () => {
     expect(out).toContain("export function add");
   });
 
+  it("batch validates each sub-call against the tool schema", async () => {
+    const out = await call("batch", { calls: [{ tool: "search_code", args: { query: "return" } }] });
+    expect(out).toMatch(/invalid arguments.*pattern/i);
+    expect(out).not.toMatch(/scan cap reached/i);
+  });
+
   it("search_code reports path:line:col matches", async () => {
     const out = await call("search_code", { pattern: "return" });
     expect(out).toMatch(/:\d+:\d+/);
@@ -206,6 +213,12 @@ describe.skipIf(!built)("MCP server end to end", () => {
   it("search_symbols finds a Python declaration", async () => {
     const out = await call("search_symbols", { query: "helper" });
     expect(out).toContain("lib/util.py");
+  });
+
+  it("search_symbols refuses an empty query instead of dumping every symbol", async () => {
+    const out = await call("search_symbols", { query: "" });
+    expect(out).toMatch(/query must contain/i);
+    expect(out).not.toContain("Calculator");
   });
 
   it("outline_file lists declarations with line numbers", async () => {
@@ -303,6 +316,22 @@ describe.skipIf(!built)("MCP server end to end", () => {
     expect(out).toMatch(/No definition indexed/i);
   });
 
+  it("replace_symbol refuses to splice a file changed since indexing", async () => {
+    const file = path.join(root, "src", "stale.ts");
+    const stat = await fs.stat(file);
+    const changed = ["// inserted after indexing", await fs.readFile(file, "utf8")].join("\n");
+    await fs.writeFile(file, changed, "utf8");
+    await fs.utimes(file, stat.atime, stat.mtime); // defeat an mtime-only guard
+
+    const out = await call("replace_symbol", {
+      name: "staleTarget",
+      body: "export function staleTarget() {\n  return 2;\n}",
+    });
+    expect(out).toMatch(/changed since index_repo/i);
+    expect(await fs.readFile(file, "utf8")).toBe(changed);
+    await call("index_repo");
+  });
+
   it("replace_symbol refuses a path outside the repo root", async () => {
     const out = await call("replace_symbol", { path: "../../../etc/hosts", line: 1, body: "x" });
     expect(out.toLowerCase()).toMatch(/escapes project root|cannot resolve/);
@@ -313,6 +342,21 @@ describe.skipIf(!built)("MCP server end to end", () => {
   it("rejects a path outside the repo root instead of reading it", async () => {
     const out = await call("read_lines", { path: "../../../etc/passwd", start: 1, end: 1 });
     expect(out.toLowerCase()).toMatch(/outside|escape|invalid|not found/);
+  });
+
+  it("rejects reads through an in-repo symlink that resolves outside the root", async () => {
+    const outside = await fs.mkdtemp(path.join(tmpdir(), "slimdex-outside-"));
+    const link = path.join(root, "escape-link");
+    try {
+      await fs.writeFile(path.join(outside, "secret.txt"), "outside secret", "utf8");
+      await fs.symlink(outside, link, process.platform === "win32" ? "junction" : "dir");
+      const out = await call("read_lines", { path: "escape-link/secret.txt", start: 1, end: 1 });
+      expect(out).toMatch(/escapes project root via symlink/i);
+      expect(out).not.toContain("outside secret");
+    } finally {
+      await fs.unlink(link).catch(() => {});
+      await fs.rm(outside, { recursive: true, force: true });
+    }
   });
 
   it("returns a terse message for a symbol that does not exist", async () => {
