@@ -54,6 +54,24 @@ unsaved is gone.
 - Don't save what the index or git already knows — memory is for what reading the
   code cannot tell you.
 
+## Width discipline (the #2 failure, after follow-through)
+Narrow tools used widely cost what the full reads did. Measured in one real session:
+`batch` 149k chars, `read_lines` 145k.
+- **`batch` costs the SUM of its sub-calls** — it saves round-trips, not tokens.
+  Batch narrow, independent lookups; give a call that would be big on its own its
+  own turn, so you can bound it.
+- **`read_lines` is cheap only if the span is.** Want a whole symbol? Use
+  `get_symbol_context` — it stops at the symbol boundary, so it cannot over-read the
+  way a guessed range does. Keep `read_lines` for exact non-symbol spans.
+- `stats session:true` shows what THIS run cost; the plain counters span every
+  earlier session on the repo.
+
+## Concurrent agents
+If another agent or a human may be in the same checkout, check `changed_files` and
+the file's mtime before editing. Two writers in one worktree clobber each other
+silently. Symptom: re-reading a file because its formatting keeps shifting under
+you — that is a conflict, not a retrieval problem, and narrower reads won't fix it.
+
 ## Session hygiene (the lever no tool can pull for you)
 Finish a chunk → save to memory → **start a fresh chat.** History is re-read every
 turn, so a long session compounds roughly quadratically; resets are the only thing

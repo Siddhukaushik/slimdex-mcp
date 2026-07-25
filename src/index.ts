@@ -23,7 +23,7 @@ import { searchFiles, formatMatches, encodeCursor, decodeCursor } from "./search
 import { buildGraph, dependents, toMermaid, nameRefEdges, mergeEdges } from "./graph.js";
 import { fileSkeleton, getSymbolContext, buildContext, enclosingSymbol } from "./intel.js";
 import { changedFiles, formatChanged, isGitRepo } from "./git.js";
-import { loadStats, formatStats, record, resetStats } from "./stats.js";
+import { loadStats, loadSessionStats, formatStats, record, resetStats } from "./stats.js";
 import { loadIndex, loadMemory, saveMemory, loadDigest, saveDigest, type MemoryFact, type DigestStore, type CodeIndex } from "./store.js";
 import { invalidateFileCache, readFileCached } from "./fscache.js";
 import { journalRecord, formatRecap, recentHints } from "./journal.js";
@@ -91,7 +91,11 @@ const INSTRUCTIONS = `slimdex replaces "read the whole file" with narrow retriev
 7. Before refactoring a shared module, run dep_graph mode:"mermaid" root:"<file>" to see the blast radius.
 8. changed_files is the cheap way to start a session on a dirty repo — it reports which symbols the diff
    lands in, without pulling the patch into context.
-9. batch several lookups into one call when they're independent.
+9. batch several lookups into one call when they're independent — but a batch costs the SUM of its
+   sub-calls, so batch NARROW calls. Several wide reads in one batch is still one huge response, and
+   it lands in the transcript as a single unskippable block. Same for read_lines: ask for the span you
+   will actually use, and prefer get_symbol_context when you want a whole symbol — it ends at the
+   symbol, so it can't over-read the way a guessed line range does.
 
 MEMORY — this is what makes a new chat start informed instead of blank:
 
@@ -1062,13 +1066,25 @@ tool(
     description:
       "Per-tool call counts and response sizes recorded to <root>/.slimdex/stats.json. Reported in characters, not " +
       "tokens — char/4 estimates are unreliable across tokenizers, so this measures what it can measure honestly. " +
-      "Use it to see which tool is actually producing your context, and to tune limits.",
-    inputSchema: { reset: z.boolean().optional().describe("Clear the counters instead of reporting them.") },
+      "Use it to see which tool is actually producing your context, and to tune limits. Counters are CUMULATIVE " +
+      "across every session on this repo until reset; pass session:true for what the current run alone cost.",
+    inputSchema: {
+      reset: z.boolean().optional().describe("Clear the counters instead of reporting them."),
+      session: z
+        .boolean()
+        .optional()
+        .describe("Report only what this server process has recorded, not the repo's all-time totals."),
+    },
   },
-  async ({ reset }) => {
+  async ({ reset, session }) => {
     if (reset) {
       await resetStats(ROOT);
       return "Stats reset.";
+    }
+    if (session) {
+      const s = await loadSessionStats(ROOT);
+      if (!Object.keys(s.tools).length) return "No tool calls recorded yet in this session.";
+      return `THIS SESSION only (since ${s.since}):\n${formatStats(s)}`;
     }
     return formatStats(await loadStats(ROOT));
   }
