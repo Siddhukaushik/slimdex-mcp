@@ -223,21 +223,8 @@ Session long enough to reset? Is `batch` or `read_lines` top of the chars column
 and if so, were those calls as narrow as they could have been?
 
 `stats` answers the write side and the never-reached-for side without you having to
-remember to ask:
-
-```
-write discipline:
-  replace_symbol: 0 call(s), 0 symbol(s) rewritten by name
-  changed outside slimdex: 12 file(s)
-  pre-edit checks (find_tests/dep_graph/get_context/changed_files): 0
-  ⚠ Most edits bypassed replace_symbol. …
-  ⚠ 9 write(s) with no preceding check. …
-
-not reached for this session:
-  find_tests           names the covering tests BEFORE you change a symbol
-  dep_graph            blast radius of a shared module while it is still cheap
-  replace_symbol       rewrite by name, without re-sending the old body
-```
+remember to ask — it prints a **write discipline** block and a **not reached for
+this session** block. How to read them:
 
 - **"Changed outside slimdex"** — files whose *content* moved between two
   `index_repo` runs that slimdex didn't write. An mtime bump with identical bytes
