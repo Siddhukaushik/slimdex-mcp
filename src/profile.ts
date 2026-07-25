@@ -44,6 +44,43 @@ export const LEAN_TOOLS = new Set([
   "memory_get",
 ]);
 
+/**
+ * The tools lean hides. Kept explicitly rather than derived, because the server
+ * `instructions` are fixed at construction time — before any tool registers —
+ * and the instructions MUST name these: 11 of them are actively recommended by
+ * the guidance sent every turn (get_context, find_tests, changed_files,
+ * digest_save …). A tool the model is told to use but cannot see in its tool
+ * list is capability lost, not surface saved. A test asserts this list matches
+ * what the lean server actually hides, so it cannot drift.
+ */
+export const BATCH_ONLY = [
+  "get_context",
+  "changed_files",
+  "find_tests",
+  "dep_graph",
+  "outline_file",
+  "search_symbols",
+  "recap",
+  "memory_list",
+  "memory_search",
+  "memory_delete",
+  "digest_save",
+  "digest_get",
+  "snapshot",
+  "stats",
+];
+
+/** The line appended to INSTRUCTIONS under lean, so nothing is unreachable in practice. */
+export function leanNote(): string {
+  return (
+    `\n\nTOOL SURFACE: this server runs the lean profile — ${LEAN_TOOLS.size} tools are advertised, and these ` +
+    `${BATCH_ONLY.length} are fully working but NOT in your tool list:\n  ${BATCH_ONLY.join(", ")}\n` +
+    `Call any of them through batch: [{tool:"get_context",args:{name:"X"}}]. Everything above applies unchanged — ` +
+    `when the guidance says use find_tests or changed_files or digest_save, route it through batch rather than ` +
+    `skipping the step or falling back to a broad read.`
+  );
+}
+
 export type Profile = "full" | "lean";
 
 export function profile(): Profile {

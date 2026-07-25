@@ -433,7 +433,7 @@ node smoke-test.mjs "C:/path/to/some/repo"   # any other
 | `SLIMDEX_WATCH` | Set to `1` to auto-reindex on file save (native watcher, no deps) |
 | `SLIMDEX_PARSER` | Parser backend; only `regex` exists today |
 | `SLIMDEX_PRETTY` | Set to `1` to restore the verbose, human-aligned rendering: longer headers and column padding in `search_code`, `find_definition`, `search_symbols`, `find_references`, `repo_map`, `read_lines`, `outline_file`. Terse is the **default** — that padding is context the model pays for in every later turn. `SLIMDEX_TERSE=0` does the same thing. |
-| `SLIMDEX_PROFILE` | `lean` advertises 15 tools instead of 29, cutting the tool schemas re-sent on every turn from ~22,300 to ~12,000 chars. Hidden tools remain fully callable through `batch`, so this costs advertised surface, never capability. Default `full`. |
+| `SLIMDEX_PROFILE` | `lean` advertises 15 tools instead of 29, cutting the tool schemas re-sent on every turn from ~22,300 to ~12,600 chars. The other 14 (`get_context`, `changed_files`, `find_tests`, `dep_graph`, `outline_file`, `search_symbols`, `recap`, `memory_list`, `memory_search`, `memory_delete`, `digest_save`, `digest_get`, `snapshot`, `stats`) still work and are called through `batch` — and the server instructions name them under this profile, so the model is told what is batch-only rather than left to discover it. Default `full`. |
 | `SLIMDEX_NO_DEDUPE` | Set to `1` to disable repeat-response suppression (a second identical `read_lines`/`get_file_skeleton`/`outline_file` on an unchanged file answers with a pointer to the earlier call instead of the body; a third identical call re-emits in full). |
 
 ## The persistent cache

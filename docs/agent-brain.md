@@ -121,8 +121,14 @@ Search tools: small `limit` first, page with `offset`/cursor. `get_context`:
 
 Server-side knobs (MCP config, not per call):
 - `SLIMDEX_PROFILE=lean` — advertise 15 tools instead of 29, cutting the schemas
-  re-sent every turn from ~22,300 to ~12,000 chars. Hidden tools stay callable via
-  `batch`, so lean costs advertised surface, never capability.
+  re-sent every turn from ~22,300 to ~12,600 chars. The other 14 (`get_context`,
+  `changed_files`, `find_tests`, `dep_graph`, `outline_file`, `search_symbols`,
+  `recap`, `memory_list`, `memory_search`, `memory_delete`, `digest_save`,
+  `digest_get`, `snapshot`, `stats`) are NOT gone — call them through `batch`,
+  e.g. `batch: [{tool:"find_tests",args:{name:"X"}}]`. Under this profile the
+  server instructions list them, so nothing above becomes unreachable: when the
+  guidance says use `find_tests`, route it through `batch` rather than skipping
+  the step or falling back to a broad read.
 - Output is terse by default; `SLIMDEX_PRETTY=1` restores human-aligned padding.
 - `SLIMDEX_NO_DEDUPE=1` turns off repeat suppression.
 

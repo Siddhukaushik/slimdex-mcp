@@ -17,7 +17,7 @@ import path from "node:path";
 
 import { factPreview, factFull, formatFactList, PREVIEW_CHARS } from "../src/memfmt.js";
 import { terse, resetTerseCache, pad, padNum, t } from "../src/terse.js";
-import { advertised, LEAN_TOOLS } from "../src/profile.js";
+import { advertised, leanNote, BATCH_ONLY, LEAN_TOOLS } from "../src/profile.js";
 import { spliceSymbols, spliceSymbol } from "../src/edit.js";
 import type { MemoryFact } from "../src/store.js";
 
@@ -320,6 +320,10 @@ describe.skipIf(!built)("repeat-response suppression", () => {
   });
 });
 
+// The full advertised set, from a default-profile server — the baseline the
+// lean surface is diffed against.
+let ALL_TOOLS: string[] = [];
+
 describe.skipIf(!built)("lean profile over the wire", () => {
   let leanRoot = "";
   let leanClient: Client;
@@ -335,6 +339,7 @@ describe.skipIf(!built)("lean profile over the wire", () => {
     });
     leanClient = new Client({ name: "lean", version: "1.0.0" });
     await leanClient.connect(transport);
+    ALL_TOOLS = (await client.listTools()).tools.map((t) => t.name); // full-profile server from the outer suite
   }, 60_000);
 
   afterAll(async () => {
@@ -349,6 +354,20 @@ describe.skipIf(!built)("lean profile over the wire", () => {
     expect(names).not.toContain("digest_save");
     expect(names).not.toContain("outline_file");
     expect(names.length).toBeLessThan(20);
+  });
+
+  it("documents exactly the tools it hides, and says so in the instructions", async () => {
+    // The failure this prevents: instructions that tell the model to use
+    // get_context / find_tests / changed_files while those are absent from its
+    // tool list and nothing says they are batch-only. That is capability lost,
+    // not surface saved — so the documented list must match reality exactly.
+    const advertisedNames = (await leanClient.listTools()).tools.map((t) => t.name);
+    const hidden = ALL_TOOLS.filter((n) => !advertisedNames.includes(n));
+    expect([...hidden].sort()).toEqual([...BATCH_ONLY].sort());
+
+    const note = leanNote();
+    for (const n of BATCH_ONLY) expect(note).toContain(n);
+    expect(note).toMatch(/through batch/i);
   });
 
   it("hidden tools stay reachable through batch — lean costs schema, never capability", async () => {

@@ -38,7 +38,7 @@ import { staleCovered, formatDigest } from "./digest.js";
 import { terse, t, fileHeader, countNotice, truncNotice } from "./terse.js";
 import { factFull, formatFactList, PREVIEW_CHARS, SEARCH_PREVIEW_CHARS, SOFT_MAX_FACT_CHARS, HARD_MAX_FACT_CHARS } from "./memfmt.js";
 import { checkRepeat } from "./dedupe.js";
-import { advertised, profile, LEAN_TOOLS } from "./profile.js";
+import { advertised, profile, leanNote, LEAN_TOOLS } from "./profile.js";
 
 const ROOT = path.resolve(process.env.SLIMDEX_ROOT || process.argv[2] || process.cwd());
 
@@ -124,7 +124,13 @@ EDITING — the output side, where tokens actually cost the most (≈4-5x input)
 // ---------------------------------------------------------------------------
 type Handler = (args: any) => Promise<string>;
 const handlers: Record<string, Handler> = {};
-const server = new McpServer({ name: "slimdex", version: "0.9.0" }, { instructions: INSTRUCTIONS });
+// Under a reduced surface the instructions must also say what is missing and
+// how to reach it — most of the guidance above names tools lean does not
+// advertise, and unreachable-in-practice is worse than a few hundred chars.
+const server = new McpServer(
+  { name: "slimdex", version: "0.9.0" },
+  { instructions: profile() === "lean" ? INSTRUCTIONS + leanNote() : INSTRUCTIONS }
+);
 
 function tool(name: string, meta: { title: string; description: string; inputSchema: any }, fn: Handler) {
   // Always registered as a handler, even when the profile hides it from
