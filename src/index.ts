@@ -639,7 +639,9 @@ tool(
     description:
       "Overwrite a symbol's full definition, addressed by NAME — you never re-send the old body to locate the edit. The " +
       "range comes from the index; the file is SNAPSHOTTED first (.slimdex/snapshots), re-indexed after, and the new line " +
-      "span is reported so you don't re-read to verify. Ambiguous/unknown names are refused, never guessed. `body` = the " +
+      "span is reported so you don't re-read to verify. Safe to mix with ordinary edit tools: if the file moved under the " +
+      "index, a NAME is re-resolved against a fresh parse automatically (an explicit path+line still refuses, since that " +
+      "coordinate is yours). Ambiguous/unknown names are refused, never guessed. `body` = the " +
       "complete replacement definition, indented for the file. `edits:[…]` applies several at once (one snapshot, one " +
       "re-index); the batch is refused before any write if a target is ambiguous, two edits overlap, or a file isn't " +
       "writable, and a write that fails mid-batch rolls the earlier files back and says so.",
@@ -668,6 +670,10 @@ tool(
     // refusal string. Shared by both paths so a batch cannot resolve targets by
     // looser rules than a single edit does.
     type Target = { file: string; defLine: number; label: string };
+    // One self-heal per call. A file that is STILL stale after a fresh parse is
+    // being written by something else concurrently, and retrying in a loop
+    // against a moving target is how you write into a half-saved file.
+    let staleRetried = false;
     const resolve = async (
       index: CodeIndex,
       spec: { name?: string; path?: string; line?: number }
@@ -696,8 +702,33 @@ tool(
             found.map((d) => `  ${d.file}:${d.line}`).join("\n")
           );
         const target = found[0];
-        if (await changedSinceIndex(target.file, index.files[target.file]))
-          return `${target.file} changed since index_repo — re-index before replacing "${spec.name}".`;
+        if (await changedSinceIndex(target.file, index.files[target.file])) {
+          // The file moved under the index — almost always because the same
+          // agent edited it with an ordinary edit tool a moment ago. Refusing
+          // here cost a full round-trip (index_repo, then retry) for a problem
+          // slimdex can just fix: re-parse that file and look the name up
+          // again. Addressing by NAME is what makes this safe — the new range
+          // comes from the fresh parse, so a shifted definition is found where
+          // it now is, not where it used to be.
+          //
+          // Explicit path+line still refuses (above): there the caller supplied
+          // the coordinate, computed against state that has since changed, and
+          // silently retargeting someone else's line number is how you
+          // overwrite the wrong function.
+          if (staleRetried) return `${target.file} is still changing under the index — re-run index_repo and retry.`;
+          staleRetried = true;
+          invalidateFileCache(path.join(ROOT, target.file)); // (mtime,size) can miss a same-size edit
+          // Staleness was detected by CONTENT HASH, which catches an edit that
+          // left mtime alone — but the incremental build skips on mtime, so a
+          // plain refresh would decline to re-parse the very file we know is
+          // wrong, and the retry would fail identically. Poison the timestamp so
+          // this one file re-parses. The entry object stays in place, so the
+          // external-edit counter still sees the old hash and records the edit.
+          const stale = index.files[target.file];
+          if (stale) stale.mtimeMs = -1;
+          await buildOrRefresh(ROOT, false);
+          return resolve(await loadIndex(ROOT), spec);
+        }
         return { file: target.file, defLine: target.line, label: spec.name };
       }
       return "Provide either name, or path + line, plus body.";
@@ -778,8 +809,6 @@ async function replaceMany(
   edits: { name?: string; path?: string; line?: number; body: string }[],
   resolve: (index: CodeIndex, spec: { name?: string; path?: string; line?: number }) => Promise<{ file: string; defLine: number; label: string } | string>
 ): Promise<string> {
-  const index = await loadIndex(ROOT);
-
   const byFile = new Map<string, PlannedEdit[]>();
   const refusals: string[] = [];
   for (const [i, e] of edits.entries()) {
@@ -787,7 +816,13 @@ async function replaceMany(
       refusals.push(`edit ${i + 1}: body is required.`);
       continue;
     }
-    const target = await resolve(index, e);
+    // Re-read per edit rather than hoisting one snapshot out of the loop:
+    // resolving a stale target now re-indexes in place, and a hoisted index
+    // object would leave every later edit in the batch comparing against
+    // entries that were just replaced — refusing the whole batch for a
+    // staleness that had already been repaired. loadIndex returns the shared
+    // cached object, so this is a map lookup, not a re-read.
+    const target = await resolve(await loadIndex(ROOT), e);
     if (typeof target === "string") {
       refusals.push(`edit ${i + 1}: ${target}`);
       continue;
@@ -1211,7 +1246,8 @@ tool(
   {
     title: "One-shot session onboarding brief",
     description:
-      "CALL THIS FIRST in a fresh chat. One synthesized opener instead of stitching memory_list + recap yourself: what " +
+      "CALL THIS FIRST in a fresh chat — including on a repo slimdex has never seen, where it builds the index itself " +
+      "rather than sending you to index_repo. One synthesized opener instead of stitching memory_list + recap yourself: what " +
       "the repo is, where recent sessions were digging (automatic journal), and each saved conclusion CHECKED against the " +
       "current index so stale ones are flagged (✓ live, ⚠ may be stale).",
     inputSchema: {
@@ -1219,8 +1255,27 @@ tool(
     },
   },
   async ({ limit }) => {
-    const index = await loadIndex(ROOT);
-    if (Object.keys(index.files).length === 0) return "Index is empty — run index_repo first, then brief.";
+    let index = await loadIndex(ROOT);
+    // brief is documented as the FIRST call of every session, so "run
+    // index_repo first, then brief" made the documented opening move a
+    // guaranteed wasted round-trip on any repo slimdex hadn't seen — and a cold
+    // index is exactly the state a first-ever session is in. It also fires after
+    // an INDEX_VERSION bump, when the cache is discarded by design.
+    //
+    // Building it here is the same work the agent was being told to do, minus
+    // the turn. Reported rather than silent: the caller should know the opener
+    // cost a full parse, and that nothing was wrong.
+    let coldStart = "";
+    if (Object.keys(index.files).length === 0) {
+      const r = await buildOrRefresh(ROOT, false);
+      index = r.index;
+      coldStart =
+        Object.keys(index.files).length === 0
+          ? ""
+          : `(index was empty — built it first: ${r.totalFiles} files, ${r.parsed} parsed)\n\n`;
+      if (Object.keys(index.files).length === 0)
+        return "Index is empty and indexing found no supported files — check the root, or .slimdex.json's extensions/ignoreDirs.";
+    }
     const mem = await loadMemory(ROOT);
     const recap = await formatRecap(ROOT, limit ?? 200);
     // Repo-level freshness: how many files drifted from the index since it was
@@ -1239,7 +1294,7 @@ tool(
     const freshLine = staleCount
       ? `\n⚠ ${staleCount} file(s) changed since the index was built — run index_repo before trusting line numbers.`
       : "";
-    return composeBrief({ index, facts: mem.facts, recap, root: ROOT }) + freshLine;
+    return coldStart + composeBrief({ index, facts: mem.facts, recap, root: ROOT }) + freshLine;
   }
 );
 

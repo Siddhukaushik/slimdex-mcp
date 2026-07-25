@@ -22,9 +22,14 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(path.join(here, "..", "src", "index.ts"), "utf8");
 
 function extract(name: string): string {
-  const m = src.match(new RegExp("const " + name + " = `([\\s\\S]*?)`;\\n"));
+  // `\r?` matters: the repo is edited on Windows and the file's line endings are
+  // not stable. Anchoring on a bare \n made this test fail for a reason that has
+  // nothing to do with the budget it exists to guard.
+  const m = src.match(new RegExp("const " + name + " = `([\\s\\S]*?)`;\\r?\\n"));
   if (!m) throw new Error(`could not find ${name} in src/index.ts`);
-  return m[1];
+  // Normalise before measuring, so the same text doesn't score differently on
+  // two machines — a CRLF checkout would otherwise inflate every line by one.
+  return m[1].replace(/\r\n/g, "\n");
 }
 
 const BUDGET = Number(src.match(/INSTRUCTIONS_BUDGET = (\d+)/)?.[1]);
