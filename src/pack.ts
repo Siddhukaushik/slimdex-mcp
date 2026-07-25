@@ -23,19 +23,41 @@ export type BodyFetcher = (file: string, line: number, kind: string, maxLines: n
 
 const BODY_MAX_LINES = 30;
 
+/** Keep a hit only if it scores at least this fraction of the best hit. */
+const RELEVANCE_FLOOR = 0.3;
+
+/** …but never prune below this many, so a close second/third always survives. */
+const MIN_KEEP = 3;
+
 export async function buildPack(index: CodeIndex, query: string, getBody: BodyFetcher, opts: PackOptions = {}): Promise<string> {
   const budget = opts.budget ?? 6000;
   const nSym = opts.symbols ?? 8;
   const nBodies = opts.bodies ?? 3;
 
-  const hits = rankIntent(index, query, nSym);
-  if (!hits.length) return `No symbols matched "${query}". Try search_code for a literal string, or different words.`;
+  const ranked = rankIntent(index, query, nSym);
+  if (!ranked.length) return `No symbols matched "${query}". Try search_code for a literal string, or different words.`;
+
+  // Relevance floor. BM25 always returns SOMETHING for any term that appears
+  // anywhere, so asking for 8 symbols got 8 whether or not 8 were relevant —
+  // a narrow question came back padded with unrelated code, which is the
+  // opposite of the point (reported from real use: "some context packs were too
+  // broad and returned unrelated symbols"). Scores are only comparable within
+  // one query, so the cut is relative to the best hit, never an absolute value.
+  // A floor of 3 keeps a genuinely close second and third from being pruned by
+  // one dominant match.
+  const topScore = ranked[0].score;
+  const hits = ranked.filter((h, i) => i < MIN_KEEP || h.score >= topScore * RELEVANCE_FLOOR);
+  const dropped = ranked.length - hits.length;
 
   const out: string[] = [];
   out.push(`Context pack for "${query}" — ${hits.length} relevant symbol(s), budget ${budget} chars.`);
   out.push("");
   out.push("Relevant symbols (ranked by intent):");
   for (const h of hits) out.push(`  ${h.file}:${h.line}  ${h.kind} ${h.name}`);
+  // Say so rather than silently narrowing: a weak tail can still be the answer
+  // when the query was worded badly, and the caller needs to know the knob exists.
+  if (dropped)
+    out.push(`  (${dropped} weaker match(es) omitted as unrelated — raise symbols, or reword, if the answer is missing)`);
 
   // How they connect: one hop of the import graph for the involved files.
   const graph = buildGraph(index);
