@@ -316,7 +316,15 @@ describe.skipIf(!built)("MCP server end to end", () => {
     expect(out).toMatch(/No definition indexed/i);
   });
 
-  it("replace_symbol refuses to splice a file changed since indexing", async () => {
+  it("replace_symbol re-indexes a file changed since indexing, then splices it correctly", async () => {
+    // This asserted a refusal until a real session showed what the refusal
+    // cost: mixing slimdex writes with an ordinary edit tool is normal, and
+    // every mix bought an index_repo plus a retry. Re-resolving a NAME against a
+    // fresh parse is safe, so the server now does that work itself.
+    //
+    // mtime is deliberately restored, which is the hard case: staleness is
+    // caught by content hash, but the incremental build skips on mtime, so this
+    // only passes if the re-index is forced to look at this file again.
     const file = path.join(root, "src", "stale.ts");
     const stat = await fs.stat(file);
     const changed = ["// inserted after indexing", await fs.readFile(file, "utf8")].join("\n");
@@ -327,8 +335,30 @@ describe.skipIf(!built)("MCP server end to end", () => {
       name: "staleTarget",
       body: "export function staleTarget() {\n  return 2;\n}",
     });
+    expect(out).toMatch(/Replaced/);
+    const after = await fs.readFile(file, "utf8");
+    // The inserted line shifted staleTarget down by one. A stale range would
+    // have overwritten the comment instead of the function.
+    expect(after).toContain("// inserted after indexing");
+    expect(after).toContain("return 2");
+    await call("index_repo");
+  });
+
+  it("replace_symbol still refuses an explicit path+line it cannot re-resolve", async () => {
+    // The line came from the caller, computed against state that has since
+    // moved. Silently retargeting it is how the wrong function gets overwritten,
+    // so this is the one case that must keep costing a round-trip.
+    const file = path.join(root, "src", "stale.ts");
+    const before = await fs.readFile(file, "utf8");
+    await fs.writeFile(file, `// another insertion\n${before}`, "utf8");
+
+    const out = await call("replace_symbol", {
+      path: "src/stale.ts",
+      line: 1,
+      body: "export function staleTarget() {\n  return 3;\n}",
+    });
     expect(out).toMatch(/changed since index_repo/i);
-    expect(await fs.readFile(file, "utf8")).toBe(changed);
+    expect(await fs.readFile(file, "utf8")).toBe(`// another insertion\n${before}`);
     await call("index_repo");
   });
 

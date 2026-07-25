@@ -176,6 +176,13 @@ condition, a string). **Never splice by line number** — indices go stale the m
 anything above them shifts, which is precisely the arithmetic `replace_symbol`
 exists to remove.
 
+**Mixing slimdex writes with an ordinary edit tool is fine.** If the file moved
+under the index, `replace_symbol name:` re-parses it and re-resolves the name
+itself — no `index_repo` round-trip. Only an explicit `path`+`line` still refuses,
+because that coordinate is yours and was computed against state that has moved.
+Same for `brief` on a repo slimdex has never seen: it builds the index rather than
+telling you to.
+
 Two known limits: `replace_symbol` takes ranges from the regex index, so a symbol
 the parser doesn't span — a top-level `const X = \`…\`` holding a long template
 literal is the case that bit — can be replaced as a *one-line* range, leaving the old
