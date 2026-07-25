@@ -466,6 +466,13 @@ format — they are untested here and may need adjustment.
 Replace `<ABS_PATH>` with your build output, e.g.
 `C:\path\to\slimdex-mcp\dist\index.js`, and `<REPO>` with the repo to index.
 
+**No tuning required.** The savings that matter are on by default in every
+client: memory facts list as previews, responses are terse, an identical re-read
+of an unchanged file answers with a pointer instead of the body, and several
+symbol edits go in one call. The env vars below are for opting *out*, or for
+`lean` — which trades a further ~8,700 chars/turn against routing a third of the
+tools through `batch`, so it is deliberately not the default.
+
 ### Claude Code (CLI) — tested
 ```bash
 claude mcp add slimdex --env SLIMDEX_ROOT=<REPO> -- node <ABS_PATH>
@@ -484,6 +491,19 @@ claude mcp add slimdex --env SLIMDEX_ROOT=<REPO> -- node <ABS_PATH>
   }
 }
 ```
+
+### Codex CLI — tested
+`~/.codex/config.toml`
+```toml
+[mcp_servers.slimdex]
+command = 'C:\Program Files\nodejs\node.exe'
+args = ['<ABS_PATH>']
+startup_timeout_sec = 30
+```
+Registered globally like this, slimdex attaches to every Codex task and uses
+that task's working directory as the repo root — no `SLIMDEX_ROOT` needed. Codex
+launches the server with a restricted environment, so give `command` an absolute
+path to node rather than relying on `PATH`.
 
 ### Cursor — untested
 `.cursor/mcp.json` (project) or `~/.cursor/mcp.json` (global)

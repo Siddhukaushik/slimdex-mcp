@@ -67,8 +67,8 @@ const INSTRUCTIONS = `slimdex replaces "read the whole file" with narrow retriev
    not one-time setup. Re-run before trusting a search if anything else may have touched the repo.
 3. get_file_skeleton before any full read of a file over ~300 lines — then FOLLOW THROUGH: pull the
    bodies you need with get_symbol_context (names:[...] takes several in one call) or read_lines.
-   Falling back to a whole-file read after a skeleton throws the saving away at the exact moment it
-   was about to pay; the skeleton told you where everything is, so read only that.
+   A whole-file read after a skeleton throws the saving away at the moment it was about to pay —
+   the skeleton told you where everything is, so read only that.
 4. For anything symbol-shaped use find_definition / find_references / get_symbol_context, not
    search_code — plain text search returns same-named identifiers from unrelated files. Reserve
    search_code for real string searches. Know WHAT the code does but not its name? search_intent
@@ -89,13 +89,12 @@ MEMORY — this is what makes a new chat start informed instead of blank:
     batch call) only when you want the raw, unsynthesized lists. Facts come back as previews; expand
     only what matters with memory_get ids:[...]. Never open a session with full:true.
 11. memory_save anything durable the moment you learn it — a decision and WHY, a non-obvious
-    constraint, a gotcha that cost you time, where a surprising thing lives, a convention the code
-    implies but never states. Tag it so memory_search finds it. Work-in-progress COUNTS: confirmed
-    bugs, findings, half-done fixes, next steps — saved when confirmed, NOT "at the end". Sessions
-    never announce their end; the user just opens a new chat, and anything unsaved is gone (a
-    findings list dying with the tab was the most expensive loss observed in real use). Lead with the
-    conclusion: later sessions see the first ~150 chars, so put the answer first and keep one fact to
-    one thing.
+    constraint, a gotcha that cost time, where a surprising thing lives, a convention the code implies
+    but never states. Tag it. Work-in-progress COUNTS: confirmed bugs, findings, half-done fixes, next
+    steps — saved when confirmed, NOT "at the end". Sessions never announce their end; the user just
+    opens a new chat and anything unsaved is gone (a findings list dying with the tab was the most
+    expensive loss seen in real use). Lead with the conclusion — later sessions see the first ~150
+    chars — and keep one fact to one thing.
 12. Do NOT save what the code already says — a symbol's location is what the index is for. Memory is
     for what reading the code cannot tell you.
 13. Correct rather than duplicate: memory_search before saving, memory_delete what turns out wrong. A
@@ -170,10 +169,9 @@ tool(
   {
     title: "Index / refresh the repository",
     description:
-      "Build or incrementally refresh the persistent code index (symbols + imports). Only files whose mtime changed " +
-      "are re-parsed, so this is cheap — re-run it liberally, like `git fetch`, before trusting a search. Honors " +
-      "<root>/.slimdex.json (ignoreDirs/extensions/exclude/maxFileBytes) and reports config problems instead of " +
-      "silently ignoring them.",
+      "Build or refresh the persistent code index (symbols + imports). Only files whose mtime changed are re-parsed, so " +
+      "re-run it liberally, like `git fetch`, before trusting a search. Honors <root>/.slimdex.json " +
+      "(ignoreDirs/extensions/exclude/maxFileBytes) and reports config problems instead of ignoring them.",
     inputSchema: { force: z.boolean().optional().describe("Ignore cache and reparse everything.") },
   },
   async ({ force }) => {
@@ -216,10 +214,9 @@ tool(
   {
     title: "Snapshot uncommitted work",
     description:
-      "Copy every uncommitted (changed or untracked) file into .slimdex/snapshots/<timestamp>/ as insurance against " +
-      "accidental resets. Also runs automatically (at most hourly) whenever index_repo sees a dirty tree. Newest 10 " +
-      "snapshots are kept. This defeats a stray `git checkout .` — it does NOT replace committing, which is the only " +
-      "protection that survives the disk.",
+      "Copy every uncommitted file into .slimdex/snapshots/<timestamp>/ as insurance against accidental resets. Also " +
+      "runs automatically (at most hourly) when index_repo sees a dirty tree; newest 10 kept. Defeats a stray " +
+      "`git checkout .`; does NOT replace committing.",
     inputSchema: {},
   },
   async () => {
@@ -442,10 +439,10 @@ tool(
   {
     title: "Which tests exercise a symbol",
     description:
-      "Of everything that references a symbol, which references live in TEST files: 'if I change calculateTax, which " +
-      "tests catch a break' — run exactly those, not the whole suite. Nothing testing it is surfaced as risk BEFORE you " +
-      "edit. Test files are detected by convention (*.test.*, *.spec.*, __tests__/, test_*.py, *_test.go …) or an indexed " +
-      "describe/it title. Textual, so same caveat as find_references: same-named identifiers can slip in.",
+      "Which references to a symbol live in TEST files: 'if I change calculateTax, which tests catch a break' — run " +
+      "exactly those, not the whole suite. Nothing covering it is surfaced as risk BEFORE you edit. Detected by path " +
+      "convention (*.test.*, *.spec.*, __tests__/, test_*.py …) or an indexed describe/it title. Textual, so same caveat " +
+      "as find_references.",
     inputSchema: {
       name: z.string(),
       pathPrefix: z.string().optional(),
@@ -488,10 +485,9 @@ tool(
   {
     title: "Find code by intent (BM25, no embeddings)",
     description:
-      "When you know WHAT the code does but not its name: a natural-language query ranked against every indexed symbol " +
-      "by BM25 over tokenized names (camelCase/snake_case split), kinds and filenames — so 'validate user email' surfaces " +
-      "validateEmail / emailValidator / checkUserAddress. Matches WORDING, not meaning. For an exact/partial name use " +
-      "search_symbols; for a literal string use search_code; this is for 'the thing that…'.",
+      "Know WHAT the code does but not its name: a words query ranked over every indexed symbol by BM25 on tokenized " +
+      "names (camelCase/snake_case), kinds and filenames — 'validate user email' surfaces validateEmail / emailValidator. " +
+      "Matches WORDING, not meaning. Exact/partial name → search_symbols; literal string → search_code.",
     inputSchema: {
       query: z.string().describe("What the code does, in words — 'parse the config file', 'retry a failed request'."),
       limit: z.number().int().min(1).max(50).optional().describe("Top matches to return (default 10)."),
@@ -511,11 +507,10 @@ tool(
   {
     title: "One-call task context bundle",
     description:
-      "Understand a whole topic in ONE call instead of ~10. Give a natural-language query ('how does auth work') and " +
-      "slimdex runs the exploration itself — BM25-ranks the relevant symbols, shows how their files connect (import " +
-      "graph, one hop), and includes the top few bodies — assembled into a single bundle under a char budget. Saves " +
-      "the round-trips AND keeps the transcript from bloating with ten separate results (the cost that compounds every " +
-      "later turn). Use it to orient on an unfamiliar area; drop to get_symbol_context / read_lines for exact source.",
+      "Understand a whole topic in ONE call instead of ~10: give a natural-language query ('how does auth work') and " +
+      "slimdex runs the exploration itself — BM25-ranks the symbols, shows how their files connect (import graph, one " +
+      "hop), includes the top few bodies, all under a char budget. Saves the round-trips AND keeps ten separate results " +
+      "out of the transcript. Orient with this; drop to get_symbol_context / read_lines for exact source.",
     inputSchema: {
       query: z.string().describe("The topic to understand, in words — 'how does login work', 'the indexing pipeline'."),
       budget: z.number().int().min(1000).max(20000).optional().describe("Soft char cap on the whole pack (default 6000)."),
@@ -614,13 +609,11 @@ tool(
   {
     title: "Replace a symbol's body by name (write)",
     description:
-      "Overwrite the full definition of a symbol (function/class/method) with new code, addressed by NAME — you never " +
-      "re-send the old body just to locate the edit, which is where output tokens (≈4-5x input) leak on every change. " +
-      "The symbol's line range comes from the index; the file is SNAPSHOTTED first (rollback under .slimdex/snapshots), " +
-      "then re-indexed, and the response reports the new line span so you don't re-read to verify. Ambiguous or unknown " +
-      "names are refused, never guessed. `body` must be the complete replacement definition, indented to sit in the file. " +
-      "`edits:[…]` applies several in one call — one snapshot, one re-index, one response; refused as a whole if any " +
-      "target is ambiguous or two edits overlap, so nothing is half-applied.",
+      "Overwrite a symbol's full definition, addressed by NAME — you never re-send the old body to locate the edit. The " +
+      "range comes from the index; the file is SNAPSHOTTED first (.slimdex/snapshots), re-indexed after, and the new line " +
+      "span is reported so you don't re-read to verify. Ambiguous/unknown names are refused, never guessed. `body` = the " +
+      "complete replacement definition, indented for the file. `edits:[…]` applies several at once (one snapshot, one " +
+      "re-index), refused as a whole if a target is ambiguous or two edits overlap — nothing is half-applied.",
     inputSchema: {
       name: z.string().optional().describe("Symbol to replace, resolved via the index."),
       path: z.string().optional().describe("File path (use with line instead of name)."),
@@ -824,10 +817,10 @@ tool(
   {
     title: "One-shot context brief for a symbol",
     description:
-      "Assembles in ONE call what would otherwise take several: definition, signature, callers/references (attributed " +
-      "to their enclosing symbol — heuristic), imports, and dependents. Sections are OPT-IN via `include` (default: " +
-      "definition,signature,callers,imports). Add 'body' for full source or 'dependents' for reverse deps. Bounded by " +
-      "callerLimit and maxChars with explicit truncation — so it stays a token-saver, not a token-hog.",
+      "ONE call for what would take several: definition, signature, callers/references (attributed to their enclosing " +
+      "symbol — heuristic), imports, dependents. Sections are OPT-IN via `include` (default definition,signature," +
+      "callers,imports); add 'body' for full source, 'dependents' for reverse deps. Bounded by callerLimit and maxChars " +
+      "with explicit truncation.",
     inputSchema: {
       name: z.string(),
       include: z
@@ -933,9 +926,9 @@ tool(
   {
     title: "Dependency graph query",
     description:
-      "Query the internal import graph. mode=imports: what a file imports. mode=dependents: what imports a file. " +
-      "mode=mermaid: a Mermaid diagram — pass root (+depth, default 2) to walk outward from one file instead of " +
-      "dumping the whole graph, or scope to a path prefix. Run this before refactoring a shared module.",
+      "Query the internal import graph. mode=imports: what a file imports. mode=dependents: what imports it. " +
+      "mode=mermaid: a diagram — pass root (+depth, default 2) to walk outward from one file instead of dumping the " +
+      "whole graph, or scope to a path prefix. Run before refactoring a shared module.",
     inputSchema: {
       mode: z.enum(["imports", "dependents", "mermaid"]),
       target: z.string().optional(),
@@ -1059,10 +1052,9 @@ tool(
   {
     title: "What previous sessions did (automatic)",
     description:
-      "Reconstructs prior activity from the server's own tool-call journal — most-examined files, most-looked-up " +
-      "symbols, recent searches. Needs NO prior memory_save: it is recorded automatically, so it works even when the " +
-      "last session saved nothing. recap = where past sessions looked; memory = what they concluded. Normally use brief " +
-      "instead (it folds both in, staleness-checked); reach here for the raw journal.",
+      "Prior activity from the server's own tool-call journal — most-examined files, most-looked-up symbols, recent " +
+      "searches. Needs NO prior memory_save; works even when the last session saved nothing. recap = where sessions " +
+      "looked, memory = what they concluded. Normally use brief (folds both in); reach here for the raw journal.",
     inputSchema: {
       limit: z.number().int().min(1).max(400).optional().describe("How many recent journaled calls to summarize (default 200)."),
     },
@@ -1075,10 +1067,9 @@ tool(
   {
     title: "One-shot session onboarding brief",
     description:
-      "The whole point of the persistence layer in one call: instead of stitching memory_list + recap yourself at the " +
-      "start of a session, get a synthesized opener — what the repo is, where recent sessions were digging (from the " +
-      "automatic journal), and each saved conclusion CHECKED against the current index so stale ones are flagged (✓ still " +
-      "references live code, ⚠ may be stale). Call this first in a fresh chat; it starts you informed instead of blank.",
+      "CALL THIS FIRST in a fresh chat. One synthesized opener instead of stitching memory_list + recap yourself: what " +
+      "the repo is, where recent sessions were digging (automatic journal), and each saved conclusion CHECKED against the " +
+      "current index so stale ones are flagged (✓ live, ⚠ may be stale).",
     inputSchema: {
       limit: z.number().int().min(1).max(400).optional().describe("Journaled calls to summarize for the focus section (default 200)."),
     },
@@ -1104,10 +1095,9 @@ tool(
   {
     title: "Save the repo architecture digest",
     description:
-      "Store a compact 'how this repo works' cheat-sheet — modules, key flows, entry points, conventions — so future " +
-      "sessions read a page instead of re-exploring. Pass `covers` (the paths it summarizes) so later sessions are told " +
-      "when a covered file changed and the digest may be stale. Overwrites the previous one. Save what reading the code " +
-      "CAN'T quickly tell you: the why and the shape, not a symbol list.",
+      "Store a compact 'how this repo works' cheat-sheet — modules, flows, entry points, conventions — so future " +
+      "sessions read a page instead of re-exploring. `covers` (the paths it summarizes) lets later sessions be told when " +
+      "a covered file changed. Overwrites the previous one. Save the why and the shape, not a symbol list.",
     inputSchema: {
       text: z.string().describe("The digest prose — compact, the architecture and flows, not a file dump."),
       covers: z.array(z.string()).optional().describe("Repo-relative paths/dirs this digest summarizes (omit = whole repo)."),
