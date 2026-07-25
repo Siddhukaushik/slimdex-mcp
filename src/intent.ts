@@ -51,7 +51,27 @@ export function buildCorpus(index: CodeIndex): Doc[] {
   return docs;
 }
 
+/**
+ * Files that DESCRIBE the system rather than being it.
+ *
+ * `.html` is an indexed extension, so `docs/tool-guide.html` contributes real
+ * symbols to the corpus — and it is the worst possible competitor for an
+ * architecture query, because it explains the tools in prose and therefore
+ * out-words the implementation on exactly the queries context_pack is for.
+ * Same root cause as the test-title problem below: BM25 matches wording, and
+ * documentation is wording.
+ */
+export function isDocFile(file: string): boolean {
+  return /(^|\/)docs?\//i.test(file) || /\.(md|markdown|html?|rst|txt)$/i.test(file);
+}
+
 export interface RankOptions {
+  /**
+   * Rank implementation above documentation (context_pack). Demoted, not
+   * dropped — search_intent leaves docs ranked normally, because "where is the
+   * doc about X" is a legitimate thing to ask there.
+   */
+  deprioritizeDocs?: boolean;
   /**
    * Rank every non-test symbol above every test symbol (context_pack).
    *
@@ -101,7 +121,13 @@ export function rankIntent(index: CodeIndex, query: string, limit = 10, opts: Ra
     }
     if (score > 0) hits.push({ file: d.file, line: d.line, name: d.name, kind: d.kind, score });
   }
-  const tier = (h: IntentHit) => (opts.deprioritizeTests && h.kind === "test" ? 1 : 0);
+  // Tiers, best first: implementation, then tests, then documentation. Sorting
+  // by tier rather than scaling the score keeps the printed score honest.
+  const tier = (h: IntentHit): number => {
+    if (opts.deprioritizeDocs && isDocFile(h.file)) return 2;
+    if (opts.deprioritizeTests && h.kind === "test") return 1;
+    return 0;
+  };
   hits.sort((a, b2) => tier(a) - tier(b2) || b2.score - a.score || a.file.localeCompare(b2.file));
   return hits.slice(0, limit);
 }

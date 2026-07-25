@@ -38,6 +38,25 @@ export function toPosix(p: string): string {
   return p.split(path.sep).join("/");
 }
 
+/**
+ * Is this repo-relative posix path inside `prefix`, respecting DIRECTORY
+ * boundaries?
+ *
+ * A bare `startsWith` does not: prefix "s" matched src/, scripts/ AND
+ * smoke-test.mjs, and prefix "src" matched a sibling "src-old/" — so scoping a
+ * search could silently widen it instead of narrowing it, which is the one
+ * thing a scoping argument must never do. The correct comparison already
+ * existed twice in this codebase (repo_map's drill-down, digest.ts's isCovered);
+ * this is that rule, in one place, for every pathPrefix to share.
+ *
+ * An empty prefix means "no filter" rather than "matches nothing".
+ */
+export function underPrefix(file: string, prefix: string): boolean {
+  const p = toPosix(prefix).replace(/\/+$/, "");
+  if (!p) return true;
+  return file === p || file.startsWith(p + "/");
+}
+
 // Optional per-repo config at <root>/.slimdex.json:
 //   { "ignoreDirs": ["fixtures"], "extensions": [".astro"], "exclude": ["generated/"],
 //     "maxFileBytes": 2000000 }
