@@ -1,11 +1,3 @@
-# Slimdex Agent Brain
-
-Everything you need in one page. The slimdex server also injects fuller versions of
-the tool rules into your context each turn; the tables here are the compressed form
-so this file works on its own, and so the rules that get skipped most often are in
-front of you twice. Full prose reference: `docs/agent-brain.md` in the slimdex-mcp
-repo.
-
 ## Prime directive
 Return the answer, not the haystack. But when you genuinely can't be sure without
 more context, get it — a wrong edit is more expensive than any read.
