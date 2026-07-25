@@ -63,8 +63,9 @@ Narrow tools used widely cost what the full reads did. Measured in one real sess
 - **`read_lines` is cheap only if the span is.** Want a whole symbol? Use
   `get_symbol_context` — it stops at the symbol boundary, so it cannot over-read the
   way a guessed range does. Keep `read_lines` for exact non-symbol spans.
-- `stats session:true` shows what THIS run cost; the plain counters span every
-  earlier session on the repo.
+- `stats checkpoint:true` at the start of a task, `stats session:true` at the end, to
+  see what that task cost. Plain counters span every earlier session on the repo, and
+  `session:true` alone means "since the server booted", which outlives one chat.
 
 ## Concurrent agents
 If another agent or a human may be in the same checkout, check `changed_files` and
@@ -121,7 +122,7 @@ reads are fine — no ceremony.
   reached via `batch`. If you do see a lean surface, route those steps through
   `batch` — never silently skip one or fall back to a broad read.
 
-## Self-audit (run `stats`)
+## Self-audit (`stats checkpoint:true` before, `stats session:true` after)
 Opened with `index_repo` + `brief`, not a full memory dump? Follow-through M ≥ N?
 Any avoidable full read? Any whole-file rewrite? `search_code` count below the
 symbol-tool count? Saved every conclusion? Session long enough that a reset would

@@ -133,8 +133,10 @@ leaks, both measured in a real session (`batch` ~149k chars, `read_lines` ~145k)
   so it cannot over-read the way a guessed range does. Reach for `read_lines` when
   you need an exact span that isn't a symbol.
 
-Run `stats session:true` mid-task, not just at the end: cumulative counters span every
-earlier session on the repo, so only the session view tells you what *this* work cost.
+To measure what ONE task cost: `stats checkpoint:true` when you start, `stats
+session:true` when you finish. The plain counters span every earlier session on the repo,
+and `session:true` alone means "since the SERVER booted" — it is long-lived, so without a
+checkpoint that still spans several chats.
 
 ## Concurrent agents (check before you edit)
 If another agent or a human may be working the same checkout, confirm it before
@@ -192,7 +194,7 @@ Extraction is regex-heuristic (~96%) — a miss costs one `search_code` fallback
 it won't bridge pure synonyms with no token overlap. The server never sees the
 conversation. On a repo of tiny files, plain reads are fine — no ceremony.
 
-## Self-audit (run `stats session:true`)
+## Self-audit (`stats checkpoint:true` at the start, `stats session:true` at the end)
 Started with `index_repo` + `brief` (not a full memory dump)? follow-through M ≥ N? Any avoidable full read? Any
 whole-file rewrite? search_code below symbol-tool count? Saved every conclusion?
 Session long enough to reset? Is `batch` or `read_lines` top of the chars column —
