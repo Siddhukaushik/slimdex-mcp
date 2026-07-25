@@ -158,7 +158,10 @@ function tool(name: string, meta: { title: string; description: string; inputSch
       failed = true;
     }
     if (!failed) repeat.remember?.(out);
-    void record(ROOT, name, out.length, failed);
+    // `batch` accounts for itself: it records each sub-call under that tool's own
+    // name plus its own envelope, so stats can answer "which tool produced my
+    // context". Recording here too would double-count the same chars.
+    if (name !== "batch") void record(ROOT, name, out.length, failed);
     void journalRecord(ROOT, name, args); // automatic continuity breadcrumb; never throws
     return text(out);
   });
@@ -1268,6 +1271,11 @@ tool(
   },
   async ({ calls }) => {
     const parts: string[] = [];
+    // Per-sub-tool accounting. Without this, every char a batch returns is filed
+    // under "batch", so a session where batch is the biggest output source says
+    // nothing about WHICH tool to rein in — and the follow-through line
+    // (skeletons vs narrow reads) misses anything routed through batch entirely.
+    let subChars = 0;
     for (const c of calls as { tool: string; args?: any }[]) {
       if (c.tool === "batch" || !handlers[c.tool]) {
         parts.push(`### ${c.tool}\nErr: unknown or non-batchable tool`);
@@ -1283,12 +1291,21 @@ tool(
         const body = repeat.notice ?? (await handlers[c.tool](args));
         if (!repeat.notice) repeat.remember?.(body);
         parts.push(`### ${c.tool} ${JSON.stringify(args)}\n${body}`);
+        subChars += body.length;
+        void record(ROOT, c.tool, body.length, false);
         void journalRecord(ROOT, c.tool, c.args); // sub-calls leave breadcrumbs too
       } catch (e) {
-        parts.push(`### ${c.tool}\nErr: ${(e as Error).message}`);
+        const err = `Err: ${(e as Error).message}`;
+        parts.push(`### ${c.tool}\n${err}`);
+        subChars += err.length;
+        void record(ROOT, c.tool, err.length, true);
       }
     }
-    return parts.join("\n\n");
+    const out = parts.join("\n\n");
+    // The batch row is now just the envelope (the `### tool {args}` headers and
+    // separators), so TOTAL still adds up and no chars are counted twice.
+    void record(ROOT, "batch", Math.max(0, out.length - subChars), false);
+    return out;
   }
 );
 

@@ -51,6 +51,14 @@ const COMMON: Rule[] = [
     re: /^\s*(export\s+)?(const|let|var)\s+([A-Za-z0-9_]+)\s*[:=].*=>\s*\{?\s*$/,
     topLevelOnly: true,
   },
+  // `syncPortfolio: async () => {` — an object property whose value is an arrow
+  // function. Mirrors the symbols.ts rule; the trailing `{` keeps TypeScript
+  // signature annotations (`onClick: (e) => void`) out.
+  {
+    kind: "method",
+    re: /^\s+([A-Za-z0-9_$]+)\s*:\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z0-9_$]+)\s*=>\s*\{\s*\}?\s*$/,
+    reject: NOT_A_METHOD,
+  },
   // JS/TS class & object-literal methods (see NOT_A_METHOD above)
   {
     kind: "method",

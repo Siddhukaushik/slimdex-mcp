@@ -81,6 +81,25 @@ const RULES: Rule[] = [
   // literal, which is how options objects, Vue components and older React
   // mixins declare their methods.
   { kind: "method", re: /^\s+([A-Za-z0-9_$]+)\s*:\s*(?:async\s+)?function\b/ },
+  // `syncPortfolio: async () => {` — a property whose value is an ARROW
+  // function. The sibling rules covered `: function` and bare `method() {}` but
+  // not this, which is how most modern service objects, Pinia/Vuex stores, API
+  // client maps and route handler tables declare their methods. A real field
+  // report: get_symbol_context("syncPortfolio") found nothing because of it.
+  //
+  // The trailing `{` is what keeps a TypeScript type annotation out — in
+  // `onClick: (e: Event) => void` the arrow describes a signature, not a
+  // definition, and indexing those would send lookups to interface members
+  // instead of implementations.
+  //
+  // NOT_A_METHOD still applies: iterator-protocol objects legitimately define
+  // `return: () => {}` and `throw: () => {}`, which are real properties but
+  // useless index entries — a lookup for "return" helps nobody.
+  {
+    kind: "method",
+    re: /^\s+([A-Za-z0-9_$]+)\s*:\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z0-9_$]+)\s*=>\s*\{\s*\}?\s*$/,
+    reject: NOT_A_METHOD,
+  },
   // Class / object-literal methods: `async getUser(id): Promise<T> {`, `get name() {`,
   // `constructor(x) {`. Requires leading indentation (methods are always nested)
   // and a trailing `{`, which together with NOT_A_METHOD keeps `if (…) {` out.
