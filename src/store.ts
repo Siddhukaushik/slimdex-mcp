@@ -13,6 +13,7 @@
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type { SymbolDef, ImportRef } from "./symbols.js";
 
 export interface FileEntry {
@@ -64,18 +65,65 @@ function dir(root: string): string {
  * durable state used to be. rename() is atomic on POSIX, and Node's rename
  * replaces an existing destination on Windows too.
  *
- * The temp name carries the pid so two processes writing the same store cannot
- * collide on the scratch file, and the temp file is cleaned up on failure so a
- * bad write does not litter .slimdex/.
+ * The scratch name must be unique per WRITE, not per process. pid + millisecond
+ * was neither: two writes in the same millisecond of the same process produced
+ * the same temp path, so one renamed the file away and the other failed on a
+ * path that no longer existed. Measured at 100 concurrent saves: 5 succeeded,
+ * 95 died with ENOENT. A uuid makes the name unique, and `wx` (exclusive
+ * create) turns any residual collision into a loud failure rather than two
+ * writers streaming into one file.
+ *
+ * The temp file is cleaned up on failure so a bad write does not litter
+ * .slimdex/.
  */
 async function writeFileAtomic(file: string, data: string): Promise<void> {
-  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
+  // Serialize per destination. A unique temp name stops two writers sharing a
+  // scratch file, but it does NOT make the rename safe: Windows fails a
+  // concurrent atomic replace of the same destination with EPERM (measured, 27
+  // of 100). Queueing per file removes self-inflicted contention outright,
+  // which is the only kind this process can actually control.
+  const key = path.resolve(file);
+  const prev = writeQueues.get(key) ?? Promise.resolve();
+  const run = prev.then(() => atomicWriteOnce(file, data));
+  // Failures must not poison the queue for later writers; `run` still rejects
+  // for this caller.
+  writeQueues.set(key, run.catch(() => undefined));
+  return run;
+}
+
+const writeQueues = new Map<string, Promise<unknown>>();
+
+async function atomicWriteOnce(file: string, data: string): Promise<void> {
+  const tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
   try {
-    await fs.writeFile(tmp, data, "utf8");
-    await fs.rename(tmp, file);
+    await fs.writeFile(tmp, data, { encoding: "utf8", flag: "wx" });
+    await renameWithRetry(tmp, file);
   } catch (e) {
     await fs.rm(tmp, { force: true }).catch(() => {});
     throw e;
+  }
+}
+
+/**
+ * Rename, retrying the transient Windows failures.
+ *
+ * The queue above handles contention from THIS process. A second slimdex on
+ * the same repo, an antivirus scanner, or an editor holding a handle can still
+ * make the replace fail momentarily — and those clear in milliseconds, so a
+ * short backoff turns a spurious hard failure into a normal write.
+ */
+const TRANSIENT_RENAME_ERRORS = new Set(["EPERM", "EACCES", "EBUSY"]);
+
+async function renameWithRetry(tmp: string, file: string, attempts = 5): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await fs.rename(tmp, file);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code ?? "";
+      if (attempt >= attempts || !TRANSIENT_RENAME_ERRORS.has(code)) throw e;
+      await new Promise((r) => setTimeout(r, 5 * 2 ** attempt)); // 5,10,20,40,80ms
+    }
   }
 }
 
@@ -159,8 +207,18 @@ export async function loadMemory(root: string): Promise<MemoryStore> {
   let raw: string;
   try {
     raw = await fs.readFile(memoryPath(root), "utf8");
-  } catch {
-    return { version: 1, facts: [] }; // genuinely absent — a new repo
+  } catch (e) {
+    // ONLY a genuinely absent file means "new repo". A permission error, a
+    // sharing violation, or a transient I/O failure means the facts are still
+    // there and we merely could not read them — returning empty for those was
+    // the same silent-overwrite trap as swallowing a parse error, just via a
+    // different door: empty store in, next save writes it back out.
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return { version: 1, facts: [] };
+    throw new Error(
+      `Cannot read ${memoryPath(root)} (${code ?? (e as Error).message}). Refusing to treat it as empty — ` +
+        `that would overwrite your saved facts on the next save. Fix access to the file and retry.`
+    );
   }
   let parsed: unknown;
   try {
