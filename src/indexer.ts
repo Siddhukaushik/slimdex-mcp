@@ -15,7 +15,43 @@ const IGNORE_DIRS = new Set([
   // Salesforce DX writes generated apex/lwc typings here — thousands of lines
   // of machine output with no symbols worth indexing.
   ".sfdx", ".sf",
+  // Framework/tooling build output and package caches. Every one of these is
+  // machine-written; none is a plausible name for hand-edited source. Kept out
+  // of the list on purpose: `assets`, `public`, `static` — those hold real
+  // source in plenty of repos, so bundles living there are caught by the
+  // minified-content check below instead of by name.
+  ".output", ".svelte-kit", ".astro", ".docusaurus", ".parcel-cache", ".turbo",
+  ".angular", ".expo", ".serverless", ".terraform", ".yarn", ".pnpm-store",
+  "bower_components", "jspm_packages", "site-packages",
+  ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache", ".nyc_output",
+  ".dart_tool", "DerivedData", "Pods",
+  "cmake-build-debug", "cmake-build-release",
 ]);
+
+// A minified bundle is indistinguishable from source by extension (`.js` is
+// `.js`) and by name once a build tool hashes it — `index-B7xK2p9q.js` looks
+// exactly like source. What it can't hide is its shape: bundlers strip the
+// newlines, so one line runs for tens of thousands of characters. Real source
+// does not, at any indent depth or line width a human tolerates.
+//
+// This is the check that pays: 2.5MB of untracked bundles under a
+// `static/assets/` directory once made roughly a third of this repo's search
+// results unusable, and no reasonable default DIRECTORY list would have caught
+// it — the directory was named `assets`.
+const MINIFIED_LINE_CHARS = 5000;
+
+export function looksMinified(source: string): boolean {
+  // Scan for a single overlong line without splitting the whole string — these
+  // are the biggest files in the repo and splitting them is what we're avoiding.
+  let lineStart = 0;
+  for (let i = 0; i < source.length; i++) {
+    if (source.charCodeAt(i) === 10 /* \n */) {
+      if (i - lineStart > MINIFIED_LINE_CHARS) return true;
+      lineStart = i + 1;
+    }
+  }
+  return source.length - lineStart > MINIFIED_LINE_CHARS;
+}
 
 const CODE_EXT = new Set([
   ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs",
@@ -75,7 +111,13 @@ export function underPrefix(file: string, prefix: string): boolean {
 //   { "ignoreDirs": ["fixtures"], "extensions": [".astro"], "exclude": ["generated/"],
 //     "maxFileBytes": 2000000 }
 interface SlimdexConfig {
-  ignoreDirs: Set<string>;
+  ignoreDirs: Set<string>; // matched against a directory's BASENAME
+  // Multi-segment ignoreDirs entries ("backend/static/assets"). The walk
+  // compares a directory's basename, so a path-shaped entry used to be accepted,
+  // counted in the "+N ignoreDirs" summary, and then match nothing — a config
+  // that reported success and did nothing, which is worse than a rejection.
+  // These are matched against the repo-relative posix path of the directory.
+  ignorePaths: string[];
   extensions: Set<string>;
   exclude: string[]; // substring match against repo-relative posix path
   maxFileBytes: number;
@@ -91,6 +133,7 @@ const KNOWN_KEYS = new Set(["ignoreDirs", "extensions", "exclude", "maxFileBytes
 
 async function loadConfig(root: string): Promise<SlimdexConfig> {
   const ignoreDirs = new Set(IGNORE_DIRS);
+  const ignorePaths: string[] = [];
   const extensions = new Set(CODE_EXT);
   const exclude: string[] = [];
   const warnings: string[] = [];
@@ -103,7 +146,7 @@ async function loadConfig(root: string): Promise<SlimdexConfig> {
     raw = await fs.readFile(path.join(root, ".slimdex.json"), "utf8");
     present = true;
   } catch {
-    return { ignoreDirs, extensions, exclude, maxFileBytes, present: false, warnings, summary: "no .slimdex.json (defaults)" };
+    return { ignoreDirs, ignorePaths, extensions, exclude, maxFileBytes, present: false, warnings, summary: "no .slimdex.json (defaults)" };
   }
 
   let cfg: Record<string, unknown>;
@@ -111,7 +154,7 @@ async function loadConfig(root: string): Promise<SlimdexConfig> {
     cfg = JSON.parse(raw);
   } catch (e) {
     warnings.push(`.slimdex.json is not valid JSON (${(e as Error).message}) — ignoring it and using defaults`);
-    return { ignoreDirs, extensions, exclude, maxFileBytes, present, warnings, summary: "invalid .slimdex.json" };
+    return { ignoreDirs, ignorePaths, extensions, exclude, maxFileBytes, present, warnings, summary: "invalid .slimdex.json" };
   }
 
   for (const key of Object.keys(cfg)) {
@@ -129,7 +172,17 @@ async function loadConfig(root: string): Promise<SlimdexConfig> {
   };
 
   for (const d of asArray("ignoreDirs")) {
-    ignoreDirs.add(String(d));
+    // Tolerate both shapes rather than making the user guess which one the
+    // walker uses: a bare name matches any directory so called, anywhere; a
+    // path-shaped entry is anchored at the repo root. Trailing slashes and
+    // leading "./" are normalised away so the obvious spellings all work.
+    const raw = toPosix(String(d)).replace(/^\.\//, "").replace(/\/+$/, "");
+    if (!raw) {
+      warnings.push(`empty ignoreDirs entry — ignored`);
+      continue;
+    }
+    if (raw.includes("/")) ignorePaths.push(raw);
+    else ignoreDirs.add(raw);
     added.ignoreDirs++;
   }
   for (const e of asArray("extensions")) {
@@ -151,7 +204,7 @@ async function loadConfig(root: string): Promise<SlimdexConfig> {
   const summary =
     `.slimdex.json loaded (+${added.ignoreDirs} ignoreDirs, +${added.extensions} extensions, ` +
     `${added.exclude} exclude rules, maxFileBytes ${maxFileBytes})`;
-  return { ignoreDirs, extensions, exclude, maxFileBytes, present, warnings, summary };
+  return { ignoreDirs, ignorePaths, extensions, exclude, maxFileBytes, present, warnings, summary };
 }
 
 async function walk(root: string, dir: string, acc: string[], cfg: SlimdexConfig): Promise<void> {
@@ -165,6 +218,10 @@ async function walk(root: string, dir: string, acc: string[], cfg: SlimdexConfig
     const full = path.join(dir, e.name);
     if (e.isDirectory()) {
       if (cfg.ignoreDirs.has(e.name)) continue;
+      // underPrefix, not startsWith: an ignorePath of "src/gen" must not also
+      // swallow a sibling "src/generated".
+      const relDir = toPosix(path.relative(root, full));
+      if (cfg.ignorePaths.some((p) => underPrefix(relDir, p))) continue;
       await walk(root, full, acc, cfg);
     } else if (e.isFile()) {
       if (!cfg.extensions.has(path.extname(e.name).toLowerCase())) continue;
@@ -182,6 +239,12 @@ export interface IndexResult {
   removed: number;
   totalFiles: number;
   skipped: number; // over maxFileBytes
+  minified: number; // build output detected by line shape, not by name
+  // Files that were already indexed and whose CONTENT moved — an edit, as
+  // opposed to a new file or a touched mtime. This is the only handle slimdex
+  // has on edits made through other tools, and it powers the write-discipline
+  // half of `stats`.
+  changedPaths: string[];
   truncated: number; // files whose symbol list hit the safety cap
   parser: string;
   config: string; // human-readable config summary
@@ -207,6 +270,8 @@ export async function buildOrRefresh(root: string, force = false): Promise<Index
   let parsed = 0;
   let reused = 0;
   let skipped = 0;
+  let minified = 0;
+  const changedPaths: string[] = [];
 
   for (const full of files) {
     const rel = toPosix(path.relative(root, full));
@@ -234,10 +299,26 @@ export async function buildOrRefresh(root: string, force = false): Promise<Index
     } catch {
       continue;
     }
+    if (looksMinified(source)) {
+      minified++;
+      present.delete(rel);
+      delete index.files[rel]; // may have been indexed before this check existed
+      continue;
+    }
+    const contentHash = createHash("sha256").update(source).digest("hex");
+    // mtime moving is not an edit — a checkout, a copy or a formatter that wrote
+    // identical bytes all bump it. Only a different hash on a file we had
+    // already indexed is a real content change, and this whole metric is worth
+    // nothing if it cries wolf.
+    // Compared against what was on disk BEFORE this build, not against the
+    // working index: `force` empties the latter, and a forced rebuild must not
+    // silently report zero edits just because it threw its own baseline away.
+    const prior = loaded.files[rel];
+    if (prior && prior.contentHash !== contentHash) changedPaths.push(rel);
     const extracted = parser.extractSymbols(source, 2001);
     const entry: FileEntry = {
       mtimeMs: stat.mtimeMs,
-      contentHash: createHash("sha256").update(source).digest("hex"),
+      contentHash,
       lines: source.split(/\r?\n/).length,
       symbols: extracted.slice(0, 2000),
       symbolsTruncated: extracted.length > 2000,
@@ -265,6 +346,8 @@ export async function buildOrRefresh(root: string, force = false): Promise<Index
     removed,
     totalFiles: present.size,
     skipped,
+    minified,
+    changedPaths,
     truncated,
     parser: parser.name,
     config: cfg.summary,

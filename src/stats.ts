@@ -23,13 +23,67 @@ export interface ToolStat {
   errors: number;
 }
 
-export interface StatsFile {
-  version: 1;
-  since: string;
-  tools: Record<string, ToolStat>;
+/**
+ * The write side of the discipline, which nothing measured.
+ *
+ * `follow-through` worked because it turned an invisible overpayment into a
+ * number: skeletons that were never followed by a narrow read show up as a low
+ * ratio, and you cannot argue with your own transcript. There was no equivalent
+ * for editing, and the cost of that showed up in a real session — dozens of
+ * whole-symbol rewrites sent through a generic edit tool (which has to be handed
+ * the old body just to locate the change), three hand-rolled line splices, and a
+ * build broken by an edit `find_tests` would have flagged in one call.
+ *
+ * The rules against all three were being injected every turn and lost anyway.
+ * Rules compete with a trained reflex; a count of what you actually did does not.
+ */
+export interface WriteStat {
+  /** Symbols rewritten through replace_symbol (a batch of 5 counts 5). */
+  slimdexSymbols: number;
+  /** replace_symbol calls, batched or not. */
+  slimdexCalls: number;
+  /**
+   * Files that changed on disk between one index_repo and the next, which
+   * slimdex did not write. Not proof the agent edited them — a human with an
+   * editor open counts too — so the wording in the report says "outside
+   * slimdex", not "you".
+   */
+  externalFiles: number;
+  /**
+   * Write events with no find_tests / dep_graph / get_context / changed_files
+   * call since the previous one. The precautionary tools are exactly the ones
+   * skipped under momentum, because their payoff is a mistake that hasn't
+   * happened yet.
+   */
+  blindEdits: number;
+  /** Pre-edit checks called at all, so a good session can show as good. */
+  checks: number;
 }
 
-const empty = (): StatsFile => ({ version: 1, since: new Date().toISOString(), tools: {} });
+export interface StatsFile {
+  version: 2;
+  since: string;
+  tools: Record<string, ToolStat>;
+  write: WriteStat;
+}
+
+/** Tools whose whole purpose is to be called BEFORE a change. */
+const PRE_EDIT_CHECKS = new Set(["find_tests", "dep_graph", "get_context", "changed_files"]);
+
+const emptyWrite = (): WriteStat => ({
+  slimdexSymbols: 0,
+  slimdexCalls: 0,
+  externalFiles: 0,
+  blindEdits: 0,
+  checks: 0,
+});
+
+const empty = (): StatsFile => ({
+  version: 2,
+  since: new Date().toISOString(),
+  tools: {},
+  write: emptyWrite(),
+});
 
 interface RootState {
   data: StatsFile;
@@ -43,6 +97,13 @@ interface RootState {
   // nothing about this session's largest response.
   session: StatsFile;
   flushTimer: NodeJS.Timeout | null;
+  /**
+   * Pre-edit checks seen since the last write event. Process-local and never
+   * persisted: "did you look before this edit" is a question about one sequence
+   * of calls, and a count reloaded from disk would answer it with a check made
+   * last Tuesday.
+   */
+  checksSinceWrite: number;
 }
 
 const states = new Map<string, RootState>();
@@ -62,17 +123,56 @@ export async function loadStats(root: string): Promise<StatsFile> {
   try {
     const raw = await fs.readFile(file(root), "utf8");
     const parsed = JSON.parse(raw);
-    if (parsed && parsed.version === 1 && parsed.tools) {
-      const data = parsed as StatsFile;
-      states.set(rootKey, { data, session: empty(), flushTimer: null });
+    // v1 had no `write` block. Migrate rather than discard: the all-time tool
+    // counters are the one number a repo cannot reconstruct, and throwing them
+    // away to add a field would be a poor trade.
+    if (parsed && (parsed.version === 1 || parsed.version === 2) && parsed.tools) {
+      const data: StatsFile = { ...parsed, version: 2, write: { ...emptyWrite(), ...(parsed.write ?? {}) } };
+      states.set(rootKey, { data, session: empty(), flushTimer: null, checksSinceWrite: 0 });
       return data;
     }
   } catch {
     /* fresh */
   }
   const data = empty();
-  states.set(rootKey, { data, session: empty(), flushTimer: null });
+  states.set(rootKey, { data, session: empty(), flushTimer: null, checksSinceWrite: 0 });
   return data;
+}
+
+/**
+ * Record symbols rewritten through replace_symbol — the good path, counted so
+ * the report can compare it against what happened outside slimdex.
+ */
+export async function recordSlimdexWrite(root: string, symbols: number): Promise<void> {
+  await loadStats(root);
+  const state = states.get(key(root))!;
+  for (const w of [state.data.write, state.session.write]) {
+    w.slimdexCalls++;
+    w.slimdexSymbols += symbols;
+    if (state.checksSinceWrite === 0) w.blindEdits++;
+  }
+  state.checksSinceWrite = 0;
+}
+
+/**
+ * Record files that changed on disk without slimdex writing them.
+ *
+ * These are detectable at all only because the index stores a content hash per
+ * file: anything index_repo has to re-parse whose hash moved was edited by
+ * something else. replace_symbol re-indexes immediately after writing, so its
+ * own edits are already absorbed by the time a later index_repo runs and are
+ * never miscounted here — except if that inline re-index failed, which the
+ * response already warns loudly about.
+ */
+export async function recordExternalEdits(root: string, files: number): Promise<void> {
+  if (files <= 0) return;
+  await loadStats(root);
+  const state = states.get(key(root))!;
+  for (const w of [state.data.write, state.session.write]) {
+    w.externalFiles += files;
+    if (state.checksSinceWrite === 0) w.blindEdits++;
+  }
+  state.checksSinceWrite = 0;
 }
 
 /**
@@ -143,6 +243,12 @@ export async function record(root: string, tool: string, responseChars: number, 
     if (responseChars > t.maxChars) t.maxChars = responseChars;
     if (isError) t.errors++;
   }
+  // A failed check is not a check — it told the model nothing, so it must not
+  // buy credit for the edit that follows.
+  if (!isError && PRE_EDIT_CHECKS.has(tool)) {
+    state.checksSinceWrite++;
+    for (const w of [s.write, state.session.write]) w.checks++;
+  }
   // Debounce: a batch of 20 calls shouldn't mean 20 disk writes.
   if (state.flushTimer) clearTimeout(state.flushTimer);
   state.flushTimer = setTimeout(() => void flush(root), 1500);
@@ -153,8 +259,55 @@ export async function resetStats(root: string): Promise<void> {
   const rootKey = key(root);
   const old = states.get(rootKey);
   if (old?.flushTimer) clearTimeout(old.flushTimer);
-  states.set(rootKey, { data: empty(), session: empty(), flushTimer: null });
+  states.set(rootKey, { data: empty(), session: empty(), flushTimer: null, checksSinceWrite: 0 });
   await flush(root);
+}
+
+/**
+ * Capabilities worth naming when they went unused, and the question each one
+ * answers. Deliberately NOT all 29 tools — a list that long is wallpaper, and a
+ * report nobody reads measures nothing.
+ *
+ * These are the ones with no cheap substitute, where the fallback is either a
+ * broad read or a guess: skipping `dep_graph` doesn't fail, it just means you
+ * found callers with grep and hoped that was all of them. That is exactly the
+ * class of tool that loses to a reflex, because nothing signals the loss.
+ */
+const WORTH_PROMPTING: Array<[string, string]> = [
+  ["brief", "opens a session with prior conclusions instead of re-exploring"],
+  ["context_pack", "one bundle for 'how does X work', instead of ~10 calls"],
+  ["get_file_skeleton", "maps a big file for a fraction of a full read"],
+  ["get_context", "definition + callers + deps in one call"],
+  ["find_tests", "names the covering tests BEFORE you change a symbol"],
+  ["dep_graph", "blast radius of a shared module while it is still cheap"],
+  ["replace_symbol", "rewrite by name, without re-sending the old body"],
+  ["search_intent", "finds a symbol when you know the behaviour, not the name"],
+  ["memory_save", "the only thing that survives this chat"],
+  ["digest_save", "an architecture cheat-sheet the next session reads instead of re-exploring"],
+  ["recap", "what past sessions actually did, reconstructed from the journal"],
+];
+
+/**
+ * Name the capabilities that were never reached for.
+ *
+ * The write-discipline block catches doing a thing the expensive way. This
+ * catches not doing it at all — the more common failure, and the harder one to
+ * notice, since an unused tool produces no evidence of its absence. A session
+ * that never called `find_tests` looks identical to one where nothing needed
+ * testing.
+ */
+export function formatUnused(s: StatsFile): string {
+  const totalCalls = Object.values(s.tools).reduce((n, t) => n + t.calls, 0);
+  // Under ~5 calls there is no pattern yet, only a short session.
+  if (totalCalls < 5) return "";
+  const unused = WORTH_PROMPTING.filter(([name]) => !(s.tools[name]?.calls > 0));
+  if (unused.length === 0) return "";
+  return (
+    `\nnot reached for this session:\n` +
+    unused.map(([name, why]) => `  ${name.padEnd(20)} ${why}`).join("\n") +
+    `\n(Not a checklist — plenty of sessions legitimately need none of these. But an` +
+    ` unused tool leaves no trace, so this is the only place its absence is visible.)`
+  );
 }
 
 export function formatStats(s: StatsFile): string {
@@ -185,6 +338,44 @@ export function formatStats(s: StatsFile): string {
     `slimdex usage since ${s.since}\n${body}\n` +
     `  ${"TOTAL".padEnd(20)} ${String(totalCalls).padStart(5)} calls  ${String(total).padStart(9)} chars\n` +
     `(chars, not tokens — see stats.ts for why)` +
-    followThrough
+    followThrough +
+    formatWrite(s.write) +
+    formatUnused(s)
   );
+}
+
+/**
+ * The write-side companion to follow-through.
+ *
+ * Deliberately reports counts and one verdict line, not a lecture. The failure
+ * this exists to catch is not an agent that disagrees with the rules — it is one
+ * that never weighed them, because a generic edit tool is a reflex and
+ * replace_symbol is a decision. A number in your own transcript is the only
+ * thing observed to interrupt that.
+ */
+export function formatWrite(w: WriteStat | undefined): string {
+  if (!w) return "";
+  const touched = w.slimdexCalls + w.externalFiles;
+  if (touched === 0) return ""; // read-only session; nothing to say
+  const lines = [
+    `\nwrite discipline:`,
+    `  replace_symbol: ${w.slimdexCalls} call(s), ${w.slimdexSymbols} symbol(s) rewritten by name`,
+    `  changed outside slimdex: ${w.externalFiles} file(s)`,
+    `  pre-edit checks (find_tests/dep_graph/get_context/changed_files): ${w.checks}`,
+  ];
+  if (w.externalFiles > w.slimdexSymbols && w.externalFiles > 1) {
+    lines.push(
+      `  ⚠ Most edits bypassed replace_symbol. If any were whole-function rewrites, the old body was` +
+        ` re-sent purely to locate the change — output tokens cost ~4-5x input, so that is the` +
+        ` expensive half of the session.`
+    );
+  }
+  if (w.blindEdits > 0) {
+    lines.push(
+      `  ⚠ ${w.blindEdits} write(s) with no preceding check. find_tests names the covering tests` +
+        ` before a change instead of a failed build after it; dep_graph shows the blast radius of a` +
+        ` shared module while it is still cheap to know.`
+    );
+  }
+  return lines.join("\n");
 }

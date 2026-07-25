@@ -28,7 +28,7 @@ list, rather than loading a file to find one thing.
 | `repo_map` | Dir-level file/line/symbol counts; `path:` drills into a dir's largest files |
 | `changed_files` | Changed files + which symbols each hunk lands in |
 | `dep_graph` | `imports` / `dependents` / a Mermaid diagram (`root`+`depth` BFS) |
-| `stats` | Per-tool call counts and response sizes, in characters |
+| `stats` | Per-tool call counts and response sizes, in characters, plus read follow-through and write discipline |
 | `batch` | Runs several calls in one request |
 | `recap` | Prior sessions' activity, reconstructed automatically from the server's tool-call journal — works even when nothing was saved |
 | `brief` | One-shot session opener: repo summary + journal-derived focus + saved conclusions checked against the live index (✓ live / ⚠ maybe stale) |
@@ -74,16 +74,28 @@ between ~4,100 and ~18,600 chars in the call every session opens with.
 
 ```json
 {
-  "ignoreDirs": ["fixtures", "snapshots"],
+  "ignoreDirs": ["fixtures", "backend/src/main/resources/static/assets"],
   "extensions": [".astro", ".vue"],
   "exclude": ["generated/", "legacy/vendor"],
   "maxFileBytes": 2000000
 }
 ```
 
-Merged on top of the built-in ignore list (`node_modules`, `dist`, `.venv`, …).
-`index_repo` echoes what it loaded and warns about unknown keys, wrong types, or
-invalid JSON, so a typo'd config isn't silently indistinguishable from none.
+Merged on top of the built-in ignore list (`node_modules`, `dist`, `.venv`,
+`.svelte-kit`, `Pods`, `.pytest_cache`, …). An `ignoreDirs` entry is either a bare
+name, matching any directory so called at any depth, or a path containing `/`,
+anchored at the repo root and respecting directory boundaries (`src/gen` will not
+also ignore `src/generated`). `index_repo` echoes what it loaded and warns about
+unknown keys, wrong types, or invalid JSON, so a typo'd config isn't silently
+indistinguishable from none.
+
+**Build output usually needs no config at all.** Beyond the directory list, any
+file whose lines run past ~5,000 characters is treated as minified build output and
+left out of the index — bundlers strip newlines, and hand-written source doesn't
+look like that. This catches what a name list structurally cannot: a hash-named
+bundle (`index-B7xK2p9q.js`) inside a directory called `assets`. `assets`, `public`
+and `static` are deliberately *not* ignored by name, because real source lives in
+them; `index_repo` reports the count as `skipped(minified build output): N`.
 
 ### How the token saving works
 
@@ -113,6 +125,25 @@ irrelevant code the naive path would drag in.** One giant file is the best
 case; a normal repo lands around half to two-thirds cheaper; a repo of tiny
 files breaks even. Same standing caveats as everything here: stats count
 chars, not tokens (÷3.5–4), and single sessions are evidence, not benchmarks.
+
+**Both figures above measure reading only, which is the cheaper half.** Output
+costs roughly 4–5× input, so an undisciplined edit wastes more than an
+undisciplined read: rewriting a whole function through a generic edit tool means
+re-sending the entire old body purely so the tool can locate it. `replace_symbol`
+addresses by name and that cost disappears. `stats` reports this alongside
+follow-through, because the leak is otherwise invisible — the expensive path
+still produces a correct edit, so nothing signals that you overpaid:
+
+```
+write discipline:
+  replace_symbol: 0 call(s), 0 symbol(s) rewritten by name
+  changed outside slimdex: 12 file(s)
+  pre-edit checks (find_tests/dep_graph/get_context/changed_files): 0
+```
+
+External edits are inferred from content hashes moving between two `index_repo`
+runs, so the number is honest about its limits: it sees that bytes changed, never
+which tool changed them, and a human editing in another window counts too.
 
 
 ### The realistic whole-workflow band

@@ -23,7 +23,17 @@ import { searchFiles, formatMatches, encodeCursor, decodeCursor } from "./search
 import { buildGraph, dependents, toMermaid, nameRefEdges, mergeEdges } from "./graph.js";
 import { fileSkeleton, getSymbolContext, buildContext, enclosingSymbol } from "./intel.js";
 import { changedFiles, formatChanged, isGitRepo } from "./git.js";
-import { loadStats, loadSessionStats, checkpointStats, formatStats, record, resetStats, flushStatsSync } from "./stats.js";
+import {
+  loadStats,
+  loadSessionStats,
+  checkpointStats,
+  formatStats,
+  record,
+  resetStats,
+  flushStatsSync,
+  recordSlimdexWrite,
+  recordExternalEdits,
+} from "./stats.js";
 import { loadIndex, loadMemory, updateMemory, loadDigest, saveDigest, type MemoryFact, type DigestStore, type CodeIndex } from "./store.js";
 import { invalidateFileCache, readFileCached } from "./fscache.js";
 import { journalRecord, formatRecap, recentHints, flushJournalSync } from "./journal.js";
@@ -71,68 +81,34 @@ async function changedSinceIndex(file: string, entry: CodeIndex["files"][string]
 // The retrieval discipline that actually produces the savings. It lived only in
 // the README, where no agent ever reads it; MCP clients inject `instructions`
 // into the model's context, so shipping it here means every client gets it.
-const INSTRUCTIONS = `slimdex replaces "read the whole file" with narrow retrieval. To actually save tokens:
+//
+// KEEP THIS UNDER INSTRUCTIONS_BUDGET. This block was 5,401 chars and a real
+// client delivered 2,072 of them, cutting mid-sentence at rule 9. Everything
+// after — all of MEMORY, all of EDITING — silently never arrived. The observed
+// effect was an agent that used slimdex as a read-only tool for an entire
+// session: dozens of whole-function rewrites sent through a generic edit tool
+// (re-sending the old body just to locate it), three hand-rolled line-splices,
+// and a build broken by a change find_tests would have flagged in one call.
+// None of that was a tool gap. The rules existed; they were off the end of the
+// buffer.
+//
+// So this is written to a budget instead of to completeness, worst case first:
+// under the lean profile leanNote() is appended, and the SUM has to fit. Length
+// is asserted in test/instructions-budget.test.ts. Adding guidance here means
+// removing guidance here — if it doesn't fit, it doesn't ship, because the
+// alternative is not "a longer block", it is "a truncated one".
+export const INSTRUCTIONS_BUDGET = 2000;
+const INSTRUCTIONS = `slimdex answers questions without reading whole files. The discipline IS the saving.
 
-1. Start with repo_map, not a file open — orient at the directory level before drilling in. To
-   understand an unfamiliar AREA ('how does auth work'), use context_pack("<question>"): it runs the
-   whole exploration server-side (rank + connect + bodies) and returns ONE bounded bundle, instead of
-   ~10 separate calls that each linger in the transcript and re-cost every later turn.
-2. Run index_repo liberally — it only reparses files whose mtime changed, so treat it like \`git fetch\`,
-   not one-time setup. Re-run before trusting a search if anything else may have touched the repo.
-3. get_file_skeleton before any full read of a file over ~300 lines — then FOLLOW THROUGH: pull the
-   bodies you need with get_symbol_context (names:[...] takes several in one call) or read_lines.
-   A whole-file read after a skeleton throws the saving away at the moment it was about to pay —
-   the skeleton told you where everything is, so read only that.
-4. For anything symbol-shaped use find_definition / find_references / get_symbol_context, not
-   search_code — plain text search returns same-named identifiers from unrelated files. Reserve
-   search_code for real string searches. Know WHAT the code does but not its name? search_intent
-   (BM25 over symbol names — 'validate email' → validateEmail), not guessed search_code patterns.
-5. Prefer one get_context(name, include:[...]) over chaining find_definition + find_references + dep_graph.
-6. Scope search_code and find_references with pathPrefix when you already know the rough area.
-7. Before refactoring a shared module, run dep_graph mode:"mermaid" root:"<file>" to see the blast radius.
-8. changed_files is the cheap way to start a session on a dirty repo — it reports which symbols the diff
-   lands in, without pulling the patch into context.
-9. batch several lookups into one call when they're independent — but a batch costs the SUM of its
-   sub-calls, so batch NARROW calls. Several wide reads in one batch is still one huge response, and
-   it lands in the transcript as a single unskippable block. Same for read_lines: ask for the span you
-   will actually use, and prefer get_symbol_context when you want a whole symbol — it ends at the
-   symbol, so it can't over-read the way a guessed line range does.
-
-MEMORY — this is what makes a new chat start informed instead of blank:
-
-10. FIRST action in a new session, before exploring: call brief. It is the one-shot opener —
-    repo summary + where recent sessions were digging (from the automatic journal) + every saved
-    conclusion CHECKED against the current index, so stale notes are flagged (✓ live / ⚠ maybe stale)
-    instead of trusted blindly. It folds memory_list + recap together; drop to those two (in one
-    batch call) only when you want the raw, unsynthesized lists. Facts come back as previews; expand
-    only what matters with memory_get ids:[...]. Never open a session with full:true.
-11. memory_save anything durable the moment you learn it — a decision and WHY, a non-obvious
-    constraint, a gotcha that cost time, where a surprising thing lives, a convention the code implies
-    but never states. Tag it. Work-in-progress COUNTS: confirmed bugs, findings, half-done fixes, next
-    steps — saved when confirmed, NOT "at the end". Sessions never announce their end; the user just
-    opens a new chat and anything unsaved is gone (a findings list dying with the tab was the most
-    expensive loss seen in real use). Lead with the conclusion — later sessions see the first ~150
-    chars — and keep one fact to one thing.
-12. Do NOT save what the code already says — a symbol's location is what the index is for. Memory is
-    for what reading the code cannot tell you.
-13. Correct rather than duplicate: memory_search before saving, memory_delete what turns out wrong. A
-    store full of stale notes is worse than an empty one.
-13b. Once you know the repo's shape, digest_save a compact architecture cheat-sheet (modules, flows,
-    entry points, conventions) with \`covers\` set to the areas it describes — the NEXT session reads a
-    page instead of re-exploring, and is told if a covered file changed. Biggest cross-session saving.
-
-EDITING — the output side, where tokens actually cost the most (≈4-5x input):
-
-14. Before changing a symbol, find_tests on it: run exactly the tests that cover it instead of the
-    whole suite, or SEE that nothing covers it and treat that as risk before editing, not after.
-15. To rewrite a whole function/class/method, use replace_symbol name:"X" body:"..." — do NOT re-send
-    the old code just so an edit tool can locate the change. slimdex knows where X is; you emit only
-    the new body. The file is snapshotted first, re-indexed after, and the response reports the new
-    line span so you don't re-read to verify. Never re-emit a whole file to change a few lines.
-16. Changing several symbols? Send them as replace_symbol edits:[{name,body},…] — one snapshot, one
-    re-index, one response, instead of N calls that each re-state the plan and re-pay the per-turn
-    overhead. Refused before any write if a target is ambiguous, two edits overlap, or a file is not
-    writable; a mid-batch write failure rolls the earlier files back and reports the exact state.`;
+OPEN: call brief FIRST — repo summary, where recent sessions dug, saved conclusions checked against the live index.
+FIND: symbol-shaped -> find_definition / find_references / get_context. Behaviour but not the name -> search_intent. Literal strings -> search_code. A whole AREA ("how does auth work") -> context_pack: ONE bounded bundle, not ~10 calls that re-cost every later turn. Scope with pathPrefix.
+READ: get_file_skeleton before opening anything over ~300 lines, then FOLLOW THROUGH — get_symbol_context names:[…] or read_lines for just those spans, never the whole file after.
+WRITE — output tokens cost ~4-5x input, so this is where the money is:
+ * replace_symbol name:"X" body:"…" rewrites a whole function/class/method WITHOUT re-sending the old code to locate it. Snapshots, re-indexes, reports the new span. Many at once: edits:[{name,body},…]. Never re-emit a file to change a few lines; never splice by line number.
+ * find_tests on a symbol BEFORE changing it — run only the covering tests, or SEE that none cover it and treat that as risk up front.
+ * dep_graph root:"<file>" before touching a shared module; changed_files for which symbols a dirty tree lands in.
+SAVE: memory_save a conclusion the moment it is confirmed, never "at the end" — unsaved findings die with the tab. Lead with the conclusion; only ~150 chars preview. digest_save an architecture cheat-sheet once you know the shape.
+index_repo is incremental — re-run it like \`git fetch\` before trusting a search.`;
 
 // ---------------------------------------------------------------------------
 // Handler registry. Each handler returns a plain string. Registering through
@@ -221,10 +197,16 @@ tool(
       /* never let a snapshot problem break indexing */
     }
 
+    // Files whose content moved since the last index, that slimdex did not
+    // write, are edits made through some other tool — the only signal available
+    // for the write half of `stats`.
+    await recordExternalEdits(ROOT, r.changedPaths.length);
+
     return (
       `Indexed ${r.totalFiles} files under ${ROOT}\n` +
       `  parsed: ${r.parsed}  reused(cache): ${r.reused}  removed: ${r.removed}` +
       (r.skipped ? `  skipped(too large): ${r.skipped}` : "") +
+      (r.minified ? `  skipped(minified build output): ${r.minified}` : "") +
       (r.truncated ? `  truncated(symbol cap): ${r.truncated}` : "") +
       `\n  symbols indexed: ${symbols}  parser: ${r.parser}\n` +
       `  config: ${r.config}${warn}\n` +
@@ -757,6 +739,7 @@ tool(
     }
     const fresh = await loadIndex(ROOT);
     const stillThere = (fresh.files[file]?.symbols ?? []).some((s) => s.line >= res.oldStart && s.line <= res.newEnd);
+    await recordSlimdexWrite(ROOT, 1);
     const snapNote = snap.files > 0 ? `snapshot saved (${snap.dir})` : "snapshot skipped (file too large or unreadable)";
     const parseNote = indexErr
       ? `⚠ THE FILE WAS WRITTEN, but re-indexing failed (${indexErr}) — do NOT re-apply this edit; run index_repo`
@@ -911,6 +894,9 @@ async function replaceMany(
   }
   const snapNote = snap.files > 0 ? `snapshot saved (${snap.dir})` : "snapshot skipped (files too large or unreadable)";
   const total = pending.reduce((n, p) => n + p.applied.length, 0);
+  // One call, N symbols — counted as N, since the point of the metric is how
+  // much rewriting went through the by-name path, not how many calls it took.
+  await recordSlimdexWrite(ROOT, total);
   return (
     `Applied ${total} edit(s) across ${pending.length} file(s)` +
     (indexErr ? `. ⚠ ALL WRITES LANDED, but re-indexing failed (${indexErr}) — do NOT re-apply; run index_repo` : ", re-indexed once") +
