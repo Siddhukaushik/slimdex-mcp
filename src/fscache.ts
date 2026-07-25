@@ -49,6 +49,43 @@ export async function readFileCached(absPath: string): Promise<string> {
   return source;
 }
 
+/**
+ * Drop one file's entry, so the next read goes to disk.
+ *
+ * Needed because (mtime, size) is an assumption, not a proof: a same-size edit
+ * that restores the timestamp is indistinguishable by stat, and on NTFS ctime
+ * doesn't help either (it tracks creation, not change). Anything that learns a
+ * file's real content changed — by hashing it, say — can say so here instead of
+ * letting a validated-but-wrong entry be served.
+ */
+export function invalidateFileCache(absPath: string): void {
+  const hit = cache.get(absPath);
+  if (!hit) return;
+  totalBytes -= hit.size;
+  cache.delete(absPath);
+}
+
+/**
+ * Replace one file's entry with content the caller has already read, together
+ * with the stat it observed. Same motivation as invalidateFileCache, but no
+ * wasted work: a caller that hashed the bytes for its own reasons can hand them
+ * over instead of forcing the next reader to go to disk again.
+ *
+ * Always evicts first, so an entry that survived on a stale (mtime, size) match
+ * cannot outlive this call — even when the new content is too large to cache.
+ */
+export function seedFileCache(absPath: string, source: string, mtimeMs: number, size: number): void {
+  invalidateFileCache(absPath);
+  if (size > MAX_ENTRY_BYTES) return;
+  cache.set(absPath, { mtimeMs, size, source });
+  totalBytes += size;
+  while (totalBytes > MAX_TOTAL_BYTES) {
+    const oldest = cache.keys().next().value!;
+    totalBytes -= cache.get(oldest)!.size;
+    cache.delete(oldest);
+  }
+}
+
 // Test hook; also useful if a future tool needs to force re-reads.
 export function clearFileCache(): void {
   cache.clear();

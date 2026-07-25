@@ -6,8 +6,8 @@
 // same symbol constantly (after an edit, after a compaction, after a detour).
 //
 // When a call is provably identical to an earlier one — same tool, same args,
-// and the underlying file and index are byte-for-byte unchanged — the body is
-// already in the transcript, so we say where instead of repeating it.
+// and the file hashes the same with the index unchanged — the body is already in
+// the transcript, so we say where instead of repeating it.
 //
 // Three deliberate limits, because a wrong suppression costs an agent
 // information it cannot get back:
@@ -16,8 +16,11 @@
 //      deterministic function of (args, file bytes, index). Anything touching
 //      git state, the journal, memory, or multiple files is out of scope —
 //      those have invalidation surfaces this cache does not model.
-//   2. A validity signature, not a guess: the target file's mtime+size AND the
-//      index's builtAt. An external edit or a re-index invalidates.
+//   2. A validity signature that is actually a content identity: a SHA-256 of
+//      the file's bytes, plus the index's builtAt. mtime+size is only a
+//      pre-filter — it can collide (a same-size edit that restores the
+//      timestamp, or a filesystem with coarse timestamp resolution), and
+//      "unchanged" has to mean unchanged, not probably-unchanged.
 //   3. Suppression happens ONCE per identical call. A third identical call
 //      re-emits in full — if an agent asks again after being told "you already
 //      have this", the honest reading is that it no longer does (compaction
@@ -27,7 +30,9 @@
 
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { loadIndex } from "./store.js";
+import { seedFileCache } from "./fscache.js";
 
 /**
  * Tools whose response is a pure function of (args, target file, index).
@@ -70,18 +75,33 @@ function keyOf(tool: string, args: Record<string, unknown>): string {
 }
 
 /**
- * mtime+size of the target file, plus when the index was built. Any external
- * write bumps the former; any re-parse bumps the latter. Returns null when the
- * signature cannot be established, which disables suppression for that call
- * (fail open — re-sending a body is a cost, suppressing wrongly is a bug).
+ * Content identity of the target file, plus when the index was built: a hash of
+ * the actual bytes, not a stat heuristic. Read fresh rather than through the
+ * file cache on purpose — the cache validates with mtime+size, which is the
+ * exact assumption being replaced here.
+ *
+ * Returns null when the signature cannot be established, which disables
+ * suppression for that call. Fail open: re-sending a body costs tokens,
+ * suppressing wrongly costs the agent information it cannot recover.
  */
 async function signature(root: string, args: Record<string, unknown>): Promise<string | null> {
   const p = args.path;
   if (typeof p !== "string" || !p) return null;
   try {
-    const st = await fs.stat(path.join(root, p));
+    const abs = path.join(root, p);
+    const st = await fs.stat(abs);
+    const bytes = await fs.readFile(abs, "utf8");
+    const hash = createHash("sha256").update(bytes).digest("hex");
+
+    // We just read the real bytes, so hand them to the content cache. That
+    // cache validates with (mtime, size), which cannot see a same-size edit
+    // that restored the timestamp — and without this, declining to suppress
+    // would achieve nothing: the handler would serve the stale cached body
+    // anyway. Seeding costs no extra I/O and keeps the two in agreement.
+    seedFileCache(abs, bytes, st.mtimeMs, st.size);
+
     const index = await loadIndex(root);
-    return `${st.mtimeMs}:${st.size}:${index.builtAt}`;
+    return `${hash}:${index.builtAt}`;
   } catch {
     return null;
   }
@@ -120,8 +140,8 @@ export async function checkRepeat(
     return {
       notice:
         `identical to call #${prev.call} earlier this session (${prev.chars} chars) — ` +
-        `${typeof args.path === "string" ? args.path : "file"} is byte-for-byte unchanged since, so the body you ` +
-        `already have is current. Re-request to force a full re-emit if it is no longer in your context.`,
+        `${typeof args.path === "string" ? args.path : "file"} hashes identically since, so the body you already ` +
+        `have is current. Re-request to force a full re-emit if it is no longer in your context.`,
     };
   }
 

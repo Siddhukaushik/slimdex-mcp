@@ -13,7 +13,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { promises as fs } from "node:fs";
+import { promises as fs, constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
@@ -113,7 +113,8 @@ EDITING — the output side, where tokens actually cost the most (≈4-5x input)
     line span so you don't re-read to verify. Never re-emit a whole file to change a few lines.
 16. Changing several symbols? Send them as replace_symbol edits:[{name,body},…] — one snapshot, one
     re-index, one response, instead of N calls that each re-state the plan and re-pay the per-turn
-    overhead. Refused as a whole if any target is ambiguous or two edits overlap.`;
+    overhead. Refused before any write if a target is ambiguous, two edits overlap, or a file is not
+    writable; a mid-batch write failure rolls the earlier files back and reports the exact state.`;
 
 // ---------------------------------------------------------------------------
 // Handler registry. Each handler returns a plain string. Registering through
@@ -613,7 +614,8 @@ tool(
       "range comes from the index; the file is SNAPSHOTTED first (.slimdex/snapshots), re-indexed after, and the new line " +
       "span is reported so you don't re-read to verify. Ambiguous/unknown names are refused, never guessed. `body` = the " +
       "complete replacement definition, indented for the file. `edits:[…]` applies several at once (one snapshot, one " +
-      "re-index), refused as a whole if a target is ambiguous or two edits overlap — nothing is half-applied.",
+      "re-index); the batch is refused before any write if a target is ambiguous, two edits overlap, or a file isn't " +
+      "writable, and a write that fails mid-batch rolls the earlier files back and says so.",
     inputSchema: {
       name: z.string().optional().describe("Symbol to replace, resolved via the index."),
       path: z.string().optional().describe("File path (use with line instead of name)."),
@@ -715,9 +717,21 @@ tool(
  * the whole batch on any unresolvable name or overlapping pair, then performs
  * exactly one write per file and one re-index for the lot.
  *
- * Why atomic-by-batch rather than best-effort: a half-applied refactor is the
- * worst possible state to hand back to an agent — it has to re-read everything
- * to find out what landed, which costs more than the batching saved.
+ * On atomicity, precisely: a half-applied refactor is the worst state to hand
+ * back to an agent, because it has to re-read everything to learn what landed.
+ * Within one file the write is atomic — the new text is composed in memory and
+ * written once. ACROSS files it cannot be, since there is no cross-file commit
+ * on a filesystem. Three things narrow that window instead of pretending it
+ * isn't there:
+ *
+ *   1. Pre-flight: every target is checked writable before the first byte is
+ *      written, so the common failure (a read-only or locked file) refuses the
+ *      batch while the tree is still untouched.
+ *   2. Rollback: the original bytes of every file are already in memory, so a
+ *      mid-batch failure restores the files that were written.
+ *   3. Honest reporting: if a rollback itself fails, the response names exactly
+ *      which files are in which state and points at the snapshot. It never
+ *      claims "nothing was written" unless nothing was.
  */
 async function replaceMany(
   edits: { name?: string; path?: string; line?: number; body: string }[],
@@ -746,7 +760,13 @@ async function replaceMany(
 
   // Compute every new file text first. An overlap or out-of-range line throws
   // here, before any write, so the batch is still all-or-nothing.
-  const pending: { file: string; abs: string; text: string; applied: ReturnType<typeof spliceSymbols>["applied"] }[] = [];
+  const pending: {
+    file: string;
+    abs: string;
+    text: string;
+    source: string; // original bytes, kept for rollback
+    applied: ReturnType<typeof spliceSymbols>["applied"];
+  }[] = [];
   for (const [file, list] of byFile) {
     const abs = path.join(ROOT, file);
     let source: string;
@@ -757,15 +777,55 @@ async function replaceMany(
     }
     try {
       const res = spliceSymbols(source, list);
-      pending.push({ file, abs, text: res.text, applied: res.applied });
+      pending.push({ file, abs, text: res.text, source, applied: res.applied });
     } catch (e) {
       return `${file}: ${(e as Error).message} — nothing was written.`;
     }
   }
 
+  // Pre-flight every target for writability. A read-only file, a lock held by
+  // another process, a vanished directory — catching those here means the
+  // common causes of a partial batch refuse it while the tree is untouched.
+  const unwritable: string[] = [];
+  for (const p of pending) {
+    try {
+      await fs.access(p.abs, fsConstants.W_OK);
+    } catch {
+      unwritable.push(p.file);
+    }
+  }
+  if (unwritable.length)
+    return `Not writable: ${unwritable.join(", ")} — nothing was written. Check permissions or another process holding the file.`;
+
   // One snapshot covering every file the batch touches, then the writes.
   const snap = await takeSnapshot(ROOT, pending.map((p) => p.file));
-  for (const p of pending) await fs.writeFile(p.abs, p.text, "utf8");
+  const written: typeof pending = [];
+  for (const p of pending) {
+    try {
+      await fs.writeFile(p.abs, p.text, "utf8");
+      written.push(p);
+    } catch (e) {
+      // Mid-batch failure. Restore what we already wrote from the originals in
+      // memory, then report precisely — including any file we could NOT put
+      // back, which is the only state where the snapshot is the real recourse.
+      const restoreFailed: string[] = [];
+      for (const done of written) {
+        try {
+          await fs.writeFile(done.abs, done.source, "utf8");
+        } catch {
+          restoreFailed.push(done.file);
+        }
+      }
+      await buildOrRefresh(ROOT, false);
+      const base = `Write failed on ${p.file}: ${(e as Error).message}.`;
+      if (restoreFailed.length)
+        return (
+          `${base} Rolled back ${written.length - restoreFailed.length} file(s), but COULD NOT restore: ` +
+          `${restoreFailed.join(", ")} — those hold the new content. Pre-edit copies are in ${snap.dir}.`
+        );
+      return `${base} Rolled back ${written.length} already-written file(s); the tree is as it was.`;
+    }
+  }
   await buildOrRefresh(ROOT, false);
   const fresh = await loadIndex(ROOT);
 
@@ -1214,7 +1274,15 @@ tool(
         continue;
       }
       try {
-        parts.push(`### ${c.tool} ${JSON.stringify(c.args ?? {})}\n${await handlers[c.tool](c.args ?? {})}`);
+        // Sub-calls get repeat suppression too. Without this, the same read
+        // routed through batch pays in full while the direct call does not —
+        // and batch is the documented way to reach a hidden tool under a lean
+        // surface, so the bypass would land exactly where it hurts most.
+        const args = c.args ?? {};
+        const repeat = await checkRepeat(ROOT, c.tool, args);
+        const body = repeat.notice ?? (await handlers[c.tool](args));
+        if (!repeat.notice) repeat.remember?.(body);
+        parts.push(`### ${c.tool} ${JSON.stringify(args)}\n${body}`);
         void journalRecord(ROOT, c.tool, c.args); // sub-calls leave breadcrumbs too
       } catch (e) {
         parts.push(`### ${c.tool}\nErr: ${(e as Error).message}`);

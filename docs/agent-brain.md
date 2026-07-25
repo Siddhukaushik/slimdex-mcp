@@ -74,8 +74,11 @@ leak — attack it, don't just optimize reads.
   the new line span so you don't re-read to verify.
 - **Several symbols at once?** → one `replace_symbol edits:[{name,body},…]` call: one
   snapshot, one re-index, one response, instead of N calls that each re-state the plan
-  and re-pay the per-turn overhead. Refused as a whole if any target is ambiguous or
-  two edits overlap, so it can never leave a half-applied refactor behind.
+  and re-pay the per-turn overhead. The batch is refused BEFORE any write if a target
+  is ambiguous, two edits overlap, or a file isn't writable. Within one file the write
+  is atomic; across files it cannot be, so a write that fails mid-batch rolls the
+  earlier files back and tells you exactly what state each one is in. Read the response
+  rather than assuming success.
 - **A few lines inside a symbol?** → `read_lines` the exact span, patch with a small
   `Edit`/`apply_patch` hunk. Never rewrite a whole file for a few lines.
 - **Before editing X** → `find_tests X`: run exactly the tests that cover it, or see
@@ -120,24 +123,27 @@ Search tools: small `limit` first, page with `offset`/cursor. `get_context`:
 `maxLines`. Always `pathPrefix` when you know the area.
 
 Server-side knobs (MCP config, not per call):
-- `SLIMDEX_PROFILE=lean` — advertise 15 tools instead of 29, cutting the schemas
-  re-sent every turn from ~22,300 to ~12,600 chars. The other 14 (`get_context`,
-  `changed_files`, `find_tests`, `dep_graph`, `outline_file`, `search_symbols`,
-  `recap`, `memory_list`, `memory_search`, `memory_delete`, `digest_save`,
-  `digest_get`, `snapshot`, `stats`) are NOT gone — call them through `batch`,
-  e.g. `batch: [{tool:"find_tests",args:{name:"X"}}]`. Under this profile the
-  server instructions list them, so nothing above becomes unreachable: when the
-  guidance says use `find_tests`, route it through `batch` rather than skipping
-  the step or falling back to a broad read.
+- `SLIMDEX_PROFILE=lean` — OFF by default and not recommended. It advertises 15
+  tools instead of 29 (~10,300 fewer chars per turn) but the other 14 — including
+  `get_context`, `changed_files`, `find_tests` and `digest_save`, which the guidance
+  above actively tells you to use — then have to be reached through `batch`, e.g.
+  `batch: [{tool:"find_tests",args:{name:"X"}}]`. The instructions list them under
+  that profile, so nothing is unreachable, but the indirection is a correctness risk
+  for a saving the default no longer needs. If you DO see a lean surface: route those
+  steps through `batch`; never silently skip one or fall back to a broad read.
 - Output is terse by default; `SLIMDEX_PRETTY=1` restores human-aligned padding.
 - `SLIMDEX_NO_DEDUPE=1` turns off repeat suppression.
 
 ## Repeat suppression (automatic)
-A second identical `read_lines` / `get_file_skeleton` / `outline_file` on a file whose
-bytes and index are unchanged answers with a pointer to the earlier call rather than
-the body — it is already in your transcript, and a response is paid again in every
-later turn. A third identical call re-emits in full: if you ask again after being told
-you already have it, the honest reading is that compaction dropped it.
+A second identical `read_lines` / `get_file_skeleton` / `outline_file` answers with a
+pointer to the earlier call instead of the body — it is already in your transcript, and
+a response is paid again in every later turn. "Unchanged" means the file HASHES the
+same and the index has not been rebuilt, not merely that its timestamp looks the same.
+A third identical call re-emits in full: if you ask again after being told you already
+have it, the honest reading is that compaction dropped it.
+
+Only those three tools, and only when they were given a `path`. Name-addressed reads
+(`get_symbol_context`) resolve their file internally and are never suppressed.
 
 ## Freshness (trust a result without re-reading)
 `get_symbol_context` appends a ⚠ line only when the file changed since it was

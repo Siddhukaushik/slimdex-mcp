@@ -306,6 +306,57 @@ describe.skipIf(!built)("repeat-response suppression", () => {
     expect(other).not.toMatch(/identical to call/);
   });
 
+  it("a same-size edit with a restored timestamp still invalidates", async () => {
+    // The case mtime+size cannot see: identical length, timestamp put back to
+    // what it was. A stat-based signature would call this unchanged and suppress
+    // a response that no longer matches the file.
+    const file = path.join(root, "src/sneaky.ts");
+    const body = Array.from({ length: 120 }, (_, i) => `export const s${i} = ${i}; // padding to clear the dedupe floor`).join("\n");
+    // Pin the timestamp to a whole second BEFORE the first read, so it can be
+    // restored exactly afterwards — utimes cannot reproduce the sub-millisecond
+    // precision a fresh write leaves behind.
+    const pinned = new Date(Math.floor(Date.now() / 1000) * 1000);
+    await fs.writeFile(file, body, "utf8");
+    await fs.utimes(file, pinned, pinned);
+    await call("index_repo");
+
+    const first = await call("read_lines", { path: "src/sneaky.ts", start: 1, end: 120 });
+    expect(first).toContain("s0 = 0");
+    const st = await fs.stat(file);
+
+    // Same byte length (a digit swap of equal width), timestamp put back exactly.
+    const mutated = body.replace("export const s7 = 7;", "export const s7 = 9;");
+    expect(mutated.length).toBe(body.length);
+    await fs.writeFile(file, mutated, "utf8");
+    await fs.utimes(file, pinned, pinned);
+
+    const after = await fs.stat(file);
+    // Both halves of a stat-based signature are now genuinely identical, so an
+    // mtime+size check WOULD suppress here. Only content hashing catches it.
+    expect(after.size).toBe(st.size);
+    expect(after.mtimeMs).toBe(st.mtimeMs);
+
+    const second = await call("read_lines", { path: "src/sneaky.ts", start: 1, end: 120 });
+    expect(second).not.toMatch(/identical to call/);
+    expect(second).toContain("s7 = 9");
+  });
+
+  it("suppression also applies to calls routed through batch", async () => {
+    await fs.writeFile(path.join(root, "src/viabatch.ts"), BIG, "utf8");
+    await call("index_repo");
+    const one: any = await client.callTool({
+      name: "batch",
+      arguments: { calls: [{ tool: "read_lines", args: { path: "src/viabatch.ts", start: 1, end: 120 } }] },
+    });
+    expect(one.content.map((c: any) => c.text).join("")).toContain("v0");
+
+    const two: any = await client.callTool({
+      name: "batch",
+      arguments: { calls: [{ tool: "read_lines", args: { path: "src/viabatch.ts", start: 1, end: 120 } }] },
+    });
+    expect(two.content.map((c: any) => c.text).join("")).toMatch(/identical to call #\d+/);
+  });
+
   it("an edited file invalidates suppression", async () => {
     await fs.writeFile(path.join(root, "src/churn.ts"), BIG, "utf8");
     await call("index_repo");
@@ -428,6 +479,40 @@ describe.skipIf(!built)("batched symbol edits", () => {
     expect(out).toMatch(/overlap/i);
     expect(out).toMatch(/nothing was written/);
     expect(await fs.readFile(path.join(root, "src/edits.ts"), "utf8")).toBe(before);
+  });
+
+  it("refuses before writing when a target file is not writable", async () => {
+    // The common cause of a partial batch. Pre-flight must catch it while the
+    // tree is untouched, rather than discovering it on write number two.
+    await fs.writeFile(path.join(root, "src/ro-a.ts"), "export function roA() {\n  return 1;\n}\n", "utf8");
+    await fs.writeFile(path.join(root, "src/ro-b.ts"), "export function roB() {\n  return 2;\n}\n", "utf8");
+    await call("index_repo");
+    const aBefore = await fs.readFile(path.join(root, "src/ro-a.ts"), "utf8");
+
+    // Make b unwritable. On Windows chmod is limited, so fall back to holding
+    // it open exclusively; if neither denies access, the case can't be staged.
+    let staged = true;
+    try {
+      await fs.chmod(path.join(root, "src/ro-b.ts"), 0o444);
+      await fs.access(path.join(root, "src/ro-b.ts"), (await import("node:fs")).constants.W_OK);
+      staged = false; // still writable — chmod had no effect on this platform
+    } catch {
+      /* denied, which is what we want */
+    }
+
+    if (staged) {
+      const out = await call("replace_symbol", {
+        edits: [
+          { name: "roA", body: "export function roA() {\n  return 111;\n}" },
+          { name: "roB", body: "export function roB() {\n  return 222;\n}" },
+        ],
+      });
+      expect(out).toMatch(/Not writable/);
+      expect(out).toMatch(/nothing was written/);
+      // The writable file in the same batch must be untouched.
+      expect(await fs.readFile(path.join(root, "src/ro-a.ts"), "utf8")).toBe(aBefore);
+    }
+    await fs.chmod(path.join(root, "src/ro-b.ts"), 0o666).catch(() => {});
   });
 
   it("still handles the single-edit form", async () => {
