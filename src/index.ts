@@ -18,13 +18,13 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
 import { outline, formatOutline } from "./outline.js";
-import { buildOrRefresh, toPosix } from "./indexer.js";
+import { buildOrRefresh, toPosix, underPrefix } from "./indexer.js";
 import { searchFiles, formatMatches, encodeCursor, decodeCursor } from "./search.js";
 import { buildGraph, dependents, toMermaid, nameRefEdges, mergeEdges } from "./graph.js";
 import { fileSkeleton, getSymbolContext, buildContext, enclosingSymbol } from "./intel.js";
 import { changedFiles, formatChanged, isGitRepo } from "./git.js";
 import { loadStats, loadSessionStats, formatStats, record, resetStats, flushStatsSync } from "./stats.js";
-import { loadIndex, loadMemory, saveMemory, loadDigest, saveDigest, type MemoryFact, type DigestStore, type CodeIndex } from "./store.js";
+import { loadIndex, loadMemory, updateMemory, loadDigest, saveDigest, type MemoryFact, type DigestStore, type CodeIndex } from "./store.js";
 import { invalidateFileCache, readFileCached } from "./fscache.js";
 import { journalRecord, formatRecap, recentHints, flushJournalSync } from "./journal.js";
 import { takeSnapshot, newestSnapshotAgeMs } from "./snapshot.js";
@@ -308,7 +308,7 @@ tool(
     const index = await loadIndex(ROOT);
     let files = Object.keys(index.files);
     if (files.length === 0) return "Index is empty — run index_repo first.";
-    if (pathPrefix) files = files.filter((f) => f.startsWith(toPosix(pathPrefix)));
+    if (pathPrefix) files = files.filter((f) => underPrefix(f, pathPrefix));
 
     const lim = limit ?? 20;
     let start = offset ?? 0;
@@ -400,7 +400,7 @@ tool(
     type Hit = { file: string; line: number; col: number; kind: string; name: string; rank: number };
     const hits: Hit[] = [];
     for (const [file, entry] of Object.entries(index.files)) {
-      if (pathPrefix && !file.startsWith(toPosix(pathPrefix))) continue;
+      if (pathPrefix && !underPrefix(file, pathPrefix)) continue;
       for (const s of entry.symbols) {
         if (kind && s.kind !== kind) continue;
         const lower = s.name.toLowerCase();
@@ -443,7 +443,7 @@ tool(
   async ({ name, pathPrefix, limit, offset }) => {
     const index = await loadIndex(ROOT);
     let files = Object.keys(index.files);
-    if (pathPrefix) files = files.filter((f) => f.startsWith(toPosix(pathPrefix)));
+    if (pathPrefix) files = files.filter((f) => underPrefix(f, pathPrefix));
     const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const lim = limit ?? 20;
     const off = offset ?? 0;
@@ -482,7 +482,7 @@ tool(
   async ({ name, pathPrefix, limit }) => {
     const index = await loadIndex(ROOT);
     let files = Object.keys(index.files);
-    if (pathPrefix) files = files.filter((f) => f.startsWith(toPosix(pathPrefix)));
+    if (pathPrefix) files = files.filter((f) => underPrefix(f, pathPrefix));
     // Scan ONLY test files (by path convention or by containing an indexed
     // describe/it/test title). A symbol used heavily in non-test code could
     // otherwise fill the match window before any test reference is reached,
@@ -603,7 +603,7 @@ tool(
         // Narrowing here rather than making the caller round-trip: an ambiguous
         // name used to cost a rejection plus a second, line-addressed call.
         if (pathPrefix) {
-          const scoped = found.filter((d) => d.file.startsWith(toPosix(pathPrefix)));
+          const scoped = found.filter((d) => underPrefix(d.file, pathPrefix));
           if (scoped.length === 0)
             return (
               `"${sym}" is indexed, but not under "${pathPrefix}". Found in:\n` +
@@ -743,13 +743,25 @@ tool(
     invalidateFileCache(abs);
     // Re-index (mtime changed -> only this file re-parses) so the new span is
     // queryable immediately and the reported line numbers are the real ones.
-    await buildOrRefresh(ROOT, false);
+    //
+    // The write already happened. If re-indexing throws, letting that propagate
+    // would surface a bare "Err: …" and the agent would reasonably conclude the
+    // edit did not land — then redo it, on top of an edit that IS on disk. So
+    // report the write as the fact it is, and the index as the part that failed.
+    let indexErr: string | null = null;
+    try {
+      await buildOrRefresh(ROOT, false);
+    } catch (e) {
+      indexErr = (e as Error).message;
+    }
     const fresh = await loadIndex(ROOT);
     const stillThere = (fresh.files[file]?.symbols ?? []).some((s) => s.line >= res.oldStart && s.line <= res.newEnd);
     const snapNote = snap.files > 0 ? `snapshot saved (${snap.dir})` : "snapshot skipped (file too large or unreadable)";
-    const parseNote = stillThere
-      ? "re-indexed, a symbol is present in the new range"
-      : "⚠ re-indexed but no symbol parsed in the new range — check the body is a valid declaration";
+    const parseNote = indexErr
+      ? `⚠ THE FILE WAS WRITTEN, but re-indexing failed (${indexErr}) — do NOT re-apply this edit; run index_repo`
+      : stillThere
+        ? "re-indexed, a symbol is present in the new range"
+        : "⚠ re-indexed but no symbol parsed in the new range — check the body is a valid declaration";
     return (
       `Replaced ${name ?? `${file}:${defLine}`}: lines ${res.oldStart}-${res.oldEnd} → ${res.oldStart}-${res.newEnd} ` +
       `(${res.newEnd - res.oldStart + 1} line(s)). ${snapNote}; ${parseNote}.`
@@ -873,7 +885,15 @@ async function replaceMany(
       return `${base} Rolled back ${written.length} already-written file(s); the tree is as it was.`;
     }
   }
-  await buildOrRefresh(ROOT, false);
+  // Every write landed. A re-index failure from here on must NOT read as "the
+  // batch failed" — the edits are on disk, and an agent that retries them would
+  // be editing already-edited files.
+  let indexErr: string | null = null;
+  try {
+    await buildOrRefresh(ROOT, false);
+  } catch (e) {
+    indexErr = (e as Error).message;
+  }
   const fresh = await loadIndex(ROOT);
 
   const lines: string[] = [];
@@ -891,7 +911,9 @@ async function replaceMany(
   const snapNote = snap.files > 0 ? `snapshot saved (${snap.dir})` : "snapshot skipped (files too large or unreadable)";
   const total = pending.reduce((n, p) => n + p.applied.length, 0);
   return (
-    `Applied ${total} edit(s) across ${pending.length} file(s), re-indexed once. ${snapNote}.` +
+    `Applied ${total} edit(s) across ${pending.length} file(s)` +
+    (indexErr ? `. ⚠ ALL WRITES LANDED, but re-indexing failed (${indexErr}) — do NOT re-apply; run index_repo` : ", re-indexed once") +
+    `. ${snapNote}.` +
     (warnings ? ` ⚠ ${warnings} edit(s) parsed no symbol.` : "") +
     `\n${lines.join("\n")}`
   );
@@ -1124,9 +1146,9 @@ tool(
         `Refused: ${t.length} chars is not a fact, it's a document (limit ${HARD_MAX_FACT_CHARS}). ` +
         `Save the conclusion, not the evidence — or use digest_save for an architecture write-up.`
       );
-    const mem = await loadMemory(ROOT);
     // Decision provenance: what the agent was looking at when it concluded this.
     // Best-effort — a memory must save even if the journal is empty/unreadable.
+    // Gathered BEFORE taking the lock so it can't lengthen the critical section.
     const context = await recentHints(ROOT, 8);
     const fact: MemoryFact = {
       id: randomUUID().slice(0, 8),
@@ -1135,8 +1157,11 @@ tool(
       created: new Date().toISOString(),
       ...(context ? { context } : {}),
     };
-    mem.facts.push(fact);
-    await saveMemory(ROOT, mem);
+    // load → mutate → save as one serialized cycle: two overlapping saves used
+    // to read the same array, and the second write erased the first fact.
+    await updateMemory(ROOT, (mem) => {
+      mem.facts.push(fact);
+    });
     const long =
       t.length > SOFT_MAX_FACT_CHARS
         ? ` (${t.length} chars — long for one fact; future sessions see the first ${PREVIEW_CHARS}, so lead with the conclusion, and prefer several focused facts over one omnibus)`
@@ -1314,11 +1339,14 @@ tool(
   "memory_delete",
   { title: "Delete a memory fact", description: "Remove one saved memory fact by its id.", inputSchema: { id: z.string() } },
   async ({ id }) => {
-    const mem = await loadMemory(ROOT);
-    const before = mem.facts.length;
-    mem.facts = mem.facts.filter((f) => f.id !== id);
-    await saveMemory(ROOT, mem);
-    return before === mem.facts.length ? `No memory with id ${id}.` : `Deleted memory ${id}.`;
+    // Same serialized cycle as memory_save: a delete racing a save would
+    // otherwise write back a fact list that never existed.
+    const removed = await updateMemory(ROOT, (mem) => {
+      const before = mem.facts.length;
+      mem.facts = mem.facts.filter((f) => f.id !== id);
+      return before !== mem.facts.length;
+    });
+    return removed ? `Deleted memory ${id}.` : `No memory with id ${id}.`;
   }
 );
 
