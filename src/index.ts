@@ -18,7 +18,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
 import { outline, formatOutline } from "./outline.js";
-import { buildOrRefresh, toPosix, underPrefix } from "./indexer.js";
+import { buildOrRefresh, toPosix, underPrefix, escapesBase } from "./indexer.js";
 import { searchFiles, formatMatches, encodeCursor, decodeCursor } from "./search.js";
 import { buildGraph, dependents, toMermaid, nameRefEdges, mergeEdges } from "./graph.js";
 import { fileSkeleton, getSymbolContext, buildContext, enclosingSymbol } from "./intel.js";
@@ -49,11 +49,12 @@ function text(s: string) {
 // Resolve a user-supplied path (relative or absolute) and refuse to escape ROOT.
 async function safeResolve(p: string): Promise<string> {
   const abs = path.isAbsolute(p) ? p : path.join(ROOT, p);
-  const rel = path.relative(ROOT, abs);
-  if (rel.startsWith("..") || path.isAbsolute(rel)) throw new Error(`path escapes project root: ${p}`);
+  // escapesBase, not startsWith(".."), so a real in-root file named `..cache`
+  // is not mistaken for traversal.
+  if (escapesBase(path.relative(ROOT, abs))) throw new Error(`path escapes project root: ${p}`);
   const [rootReal, targetReal] = await Promise.all([fs.realpath(ROOT), fs.realpath(abs)]);
-  const realRel = path.relative(rootReal, targetReal);
-  if (realRel.startsWith("..") || path.isAbsolute(realRel)) throw new Error(`path escapes project root via symlink: ${p}`);
+  if (escapesBase(path.relative(rootReal, targetReal)))
+    throw new Error(`path escapes project root via symlink: ${p}`);
   return abs;
 }
 

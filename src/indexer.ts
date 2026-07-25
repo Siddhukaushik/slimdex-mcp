@@ -51,6 +51,20 @@ export function toPosix(p: string): string {
  *
  * An empty prefix means "no filter" rather than "matches nothing".
  */
+/**
+ * Does a path.relative() result point OUTSIDE the base it was computed from?
+ *
+ * `rel.startsWith("..")` is the obvious test and it is wrong in both
+ * directions' worth of care: it also rejects legitimate in-root names that
+ * merely begin with two dots, like `..cache/file.ts`. Only a `..` segment —
+ * the whole string, or `..` followed by a separator — actually means "above
+ * the base". An absolute result means the two paths share no root at all
+ * (different drive on Windows), which is also outside.
+ */
+export function escapesBase(rel: string): boolean {
+  return rel === ".." || rel.startsWith(".." + path.sep) || rel.startsWith("../") || path.isAbsolute(rel);
+}
+
 export function underPrefix(file: string, prefix: string): boolean {
   const p = toPosix(prefix).replace(/\/+$/, "");
   if (!p) return true;

@@ -33,6 +33,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { loadIndex } from "./store.js";
 import { seedFileCache } from "./fscache.js";
+import { escapesBase } from "./indexer.js";
 
 /**
  * Tools whose response is a pure function of (args, target file, index).
@@ -88,7 +89,14 @@ async function signature(root: string, args: Record<string, unknown>): Promise<s
   const p = args.path;
   if (typeof p !== "string" || !p) return null;
   try {
-    const abs = path.join(root, p);
+    // Containment is checked HERE, before the read. This runs ahead of the
+    // tool handler, so it reached the filesystem before the handler's own
+    // safeResolve had rejected anything: `path: "../../secrets"` got opened
+    // and hashed. The bytes were never returned, but reading outside the root
+    // at all is not this cache's business. Returning null just disables
+    // suppression for the call, which is the correct fail-open.
+    const abs = path.resolve(root, p);
+    if (escapesBase(path.relative(root, abs))) return null;
     const st = await fs.stat(abs);
     const bytes = await fs.readFile(abs, "utf8");
     const hash = createHash("sha256").update(bytes).digest("hex");
