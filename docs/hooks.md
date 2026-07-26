@@ -60,8 +60,11 @@ Claude Code's VS Code extension reads the same files as the terminal, so there
 is nothing extension-specific to configure. Hooks are read at session start —
 an already-open session won't pick up a change.
 
-A different MCP client in VS Code (Cline, Continue, Copilot) has its own
-configuration and no equivalent feature; none of this applies there.
+Other MCP clients in VS Code (Cline, Continue, Copilot) do not have this hook
+mechanism. The closest repo-level substitute for Copilot is the shipped
+[Copilot instructions](../.github/copilot-instructions.md) file: it is
+advisory, not enforced, but it puts the same narrow-retrieval discipline into
+the model's prompt every turn.
 
 ### Why `npm install` doesn't just do it
 
