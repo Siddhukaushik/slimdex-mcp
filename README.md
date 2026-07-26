@@ -76,10 +76,18 @@ between ~4,100 and ~18,600 chars in the call every session opens with.
 {
   "ignoreDirs": ["fixtures", "backend/src/main/resources/static/assets"],
   "extensions": [".astro", ".vue"],
+  "suffixes": [".stories.mdx"],
   "exclude": ["generated/", "legacy/vendor"],
   "maxFileBytes": 2000000
 }
 ```
+
+`suffixes` matches a filename ending, for file types an extension can't identify.
+Salesforce metadata sidecars ship as a built-in: `AccountSvc.cls-meta.xml`,
+`panel.js-meta.xml` and `Account.object-meta.xml` are indexed, while `pom.xml`,
+`web.xml` and `manifest/package.xml` are not — adding `.xml` to `extensions`
+would have pulled in every config tree in the repo. Suffix-matched files are
+indexed for search and read reach, not symbols.
 
 Merged on top of the built-in ignore list (`node_modules`, `dist`, `.venv`,
 `.svelte-kit`, `Pods`, `.pytest_cache`, …). An `ignoreDirs` entry is either a bare

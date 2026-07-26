@@ -36,7 +36,8 @@
     "smoke": "npm run build && node smoke-test.mjs",
     "prepublishOnly": "npm run build && npm test",
     "audit": "node scripts/audit-coverage.mjs",
-    "pretest": "npm run build"
+    "pretest": "npm run build",
+    "audit:corpus": "npm run build && node scripts/corpus-audit.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

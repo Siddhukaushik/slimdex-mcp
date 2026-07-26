@@ -100,12 +100,40 @@ const RULES: Rule[] = [
     re: /^\s+([A-Za-z0-9_$]+)\s*:\s*(?:async\s+)?(?:\([^)]*\)|[A-Za-z0-9_$]+)\s*=>\s*\{\s*\}?\s*$/,
     reject: NOT_A_METHOD,
   },
+  // Java 16+ / C# records. Must sit ABOVE the method rules: a record's component
+  // list looks exactly like a parameter list, so `record Decision(String a) {}`
+  // was being indexed as a METHOD called Decision — and a record whose
+  // components wrap across lines (the usual shape once there are three of them)
+  // matched nothing at all, because the method rule needs `(…)` closed on one
+  // line. The reported symptom was get_symbol_context name:"Decision" answering
+  // "No definition indexed" for a record that was plainly there.
+  //
+  // Deliberately NOT anchored to nesting depth: records are declared both at top
+  // level and inside a class, and the earlier diagnosis that "the parser doesn't
+  // index inner types" was wrong — nested classes index fine. The gap was the
+  // keyword, at every depth.
+  //
+  // Requires `(` or `{` after the name so this cannot fire on an identifier that
+  // merely happens to be called `record` in another language.
+  {
+    kind: "type",
+    re: /^\s*(?:(?:public|private|protected|internal|static|final|sealed|abstract)\s+)*record\s+([A-Za-z0-9_$]+)\s*(?:<[^>]*>)?\s*[({]/,
+  },
   // Class / object-literal methods: `async getUser(id): Promise<T> {`, `get name() {`,
   // `constructor(x) {`. Requires leading indentation (methods are always nested)
   // and a trailing `{`, which together with NOT_A_METHOD keeps `if (…) {` out.
   {
     kind: "method",
-    re: /^[ \t]+(?:(?:public|private|protected|static|readonly|abstract|override|async|get|set)\s+)*(?:\*\s*)?([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>]*>)?\s*\(.*\)\s*(?::\s*[^{;]+)?\{\s*\}?\s*$/,
+    // The tail used to be `\{\s*\}?\s*$` — the brace had to be the LAST thing on
+    // the line. That silently excluded every single-line body:
+    // `async fetchUser(id): Promise<T> { return this.opts; }` indexed as nothing,
+    // while the identical method written across three lines indexed fine. Real
+    // code writes one-liners constantly (getters, delegating methods, guards),
+    // so this was not an edge case — it was a rule written against the shape
+    // someone pictured rather than the shapes people type. `\{.*$` accepts the
+    // body; NOT_A_METHOD and the two-token shape are what keep control flow out,
+    // and neither depends on the tail.
+    re: /^[ \t]+(?:(?:public|private|protected|static|readonly|abstract|override|async|get|set)\s+)*(?:\*\s*)?([A-Za-z_$][A-Za-z0-9_$]*)\s*(?:<[^>]*>)?\s*\(.*\)\s*(?::\s*[^{;]+)?\{.*$/,
     reject: NOT_A_METHOD,
   },
   // Java / C# / Apex methods, where a return type sits between the modifiers and
@@ -126,7 +154,18 @@ const RULES: Rule[] = [
       // type then name) before the parenthesis, where `if (cond) {` has one —
       // plus the statement-keyword guard.
       "^[ \\t]+(?!(?:return|throw|new|else|case|await|yield|delete|typeof)\\b)" +
-        "(?:(?:public|private|protected|internal|global|static|final|virtual|override|abstract|sealed|synchronized|async|unsafe|transient|webservice)\\s+)*" +
+        // Annotations on the SAME line as the signature. Apex writes these
+        // inline constantly — `@isTest static void t() {}`, `@AuraEnabled public
+        // static List<Account> get() {}`, `@future(callout=true) …` — and every
+        // one of them was invisible, because the rule expected a modifier or a
+        // return type first and found an `@`. An annotation on its own line
+        // always worked, which is why this hid: the same method indexes or not
+        // depending purely on where the author put a newline. Salesforce test
+        // classes and LWC controllers are ~entirely these two forms.
+        "(?:@[A-Za-z_][A-Za-z0-9_.]*\\s*(?:\\([^)]*\\))?\\s+)*" +
+        // `testMethod` is legacy Apex's own test marker and behaves as a
+        // modifier: `static testMethod void legacyTest() {`.
+        "(?:(?:public|private|protected|internal|global|static|final|virtual|override|abstract|sealed|synchronized|async|unsafe|transient|webservice|testMethod)\\s+)*" +
         // Optional generic type parameter, as in `static <T> Optional<T> firstOf(…)`.
         "(?:<[^<>]*(?:<[^<>]*>[^<>]*)*>\\s+)?" +
         RETURN_TYPE +
@@ -204,7 +243,12 @@ const RULES: Rule[] = [
   // saw them. Rejecting a trailing `;` keeps qualified *calls* out.
   {
     kind: "method",
-    re: /^[\w:<>,*&~\s]*?\b[A-Za-z_]\w*::(~?[A-Za-z_]\w*)\s*\([^;]*\)\s*(?:const\b\s*)?(?:noexcept\b\s*)?\{?\s*$/,
+    // Tail is `(?:\{.*)?$`: either the line ends (brace on the next line) or a
+    // brace opens an inline body. `void Engine::stop() {}` is the commonest way
+    // to write a trivial out-of-class definition and the old `\{?\s*$` missed
+    // every one. It must NOT relax to `.*$` — that admits a trailing `;`, and
+    // `Widget::render(ctx);` is a qualified CALL, not a definition.
+    re: /^[\w:<>,*&~\s]*?\b[A-Za-z_]\w*::(~?[A-Za-z_]\w*)\s*\([^;]*\)\s*(?:const\b\s*)?(?:noexcept\b\s*)?(?:\{.*)?$/,
     reject: NOT_A_METHOD,
   },
   // Free functions at column 0: `static void helper(void) {`, `char *dup(...)`.
@@ -220,7 +264,11 @@ const RULES: Rule[] = [
         "assert|print|puts|raise|require|require_relative|include|extend|del|not|and|or|elif|elsif|unless|until|import|export|declare|package|" +
         // words that open a declaration some LATER, better-typed rule owns
         "trigger|def|fun|func|fn)\\b)" +
-        "(?:[A-Za-z_]\\w*(?:\\s*\\*+\\s*|\\s+))+\\**([A-Za-z_]\\w*)\\s*\\([^;]*\\)\\s*\\{?\\s*$"
+        // Same one-line-body fix: `static void helper(void) {}` and
+        // `int main(int argc, char** argv) { return 0; }` both ended in content
+        // after the brace, so both were invisible. The declaration shape — two
+        // identifiers before the paren — is what excludes calls, not the tail.
+        "(?:[A-Za-z_]\\w*(?:\\s*\\*+\\s*|\\s+))+\\**([A-Za-z_]\\w*)\\s*\\([^;]*\\)\\s*(?:\\{.*)?$"
     ),
     reject: NOT_A_METHOD,
   },

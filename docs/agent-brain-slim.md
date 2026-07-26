@@ -153,14 +153,27 @@ conflict, not a retrieval problem.
 
 ## Indexing hygiene
 Build output crowds out real hits. Skipped by default: the usual build dirs, plus
-any file with lines past ~5,000 chars (minified). That content check exists because
-no *name* list catches a hash-named bundle in a directory called `assets` — and
-`assets`/`public`/`static` are deliberately not ignored, since real source lives
-there. Still noisy? `.slimdex.json`:
-`{"ignoreDirs": ["fixtures", "backend/src/main/resources/static/assets"]}` — bare
-names match any directory so called; entries with `/` are anchored at the repo root
-and respect boundaries (`src/gen` won't hit `src/generated`). Read the `config:`
-line `index_repo` prints rather than assuming it took.
+two **content** checks — any file with lines past ~5,000 chars (minified), and any
+page carrying a doc-generator signature (javadoc/Doxygen/jazzy/Sphinx/rustdoc).
+Both exist because no *name* list works: a hash-named bundle sits in `assets`, and
+332 of one Swift repo's 440 files were jazzy HTML in plain `docs/`. `assets`,
+`public`, `static` and `docs` are deliberately NOT ignored — real source lives there.
+
+Still noisy? `.slimdex.json`:
+`{"ignoreDirs": ["fixtures", "backend/.../static/assets"], "suffixes": [".stories.mdx"]}`
+— bare names match any directory so called; entries with `/` are anchored at the
+repo root and respect boundaries (`src/gen` won't hit `src/generated`). `suffixes`
+matches a filename ending, for types an extension can't identify. Salesforce
+`-meta.xml` sidecars are built in (indexed for search; `pom.xml` and
+`manifest/package.xml` are not). Read the `config:` line `index_repo` prints rather
+than assuming it took.
+
+**Auditing the tool itself** (maintainers): `npm run audit:corpus` indexes 18 real
+repos and reports per-extension zero-symbol rates — it found 5 parser gaps on its
+first run. `node scripts/mcp-audit.mjs` drives the real MCP server against large
+repos and reports per-tool response size, errors and slow calls. A high empty-rate
+is a lead, not a bug: CSS is empty by design, and Svelte/Vue rates are corpus
+composition. Open a sample before changing a rule.
 
 ## Bug analysis / review
 Verify every claim against the actual code before agreeing — pull the cited lines.
