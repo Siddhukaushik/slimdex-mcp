@@ -172,6 +172,34 @@ export function escapesBase(rel: string): boolean {
   return rel === ".." || rel.startsWith(".." + path.sep) || rel.startsWith("../") || path.isAbsolute(rel);
 }
 
+/**
+ * The FULL containment check: lexical, then again after resolving symlinks.
+ *
+ * Both halves are needed and they catch different things. The lexical pass
+ * stops `../../secrets` and (via path.isAbsolute) the Windows cross-drive case,
+ * where path.relative("C:\\repo", "D:\\secrets") returns `D:\secrets` — no `..`
+ * in it at all. The realpath pass stops a link that sits *inside* the repo and
+ * points outside it, which no amount of string inspection can see.
+ *
+ * It lives here, exported, because it was previously written out longhand in
+ * one caller and half-written in another: dedupe checked lexically only, so a
+ * symlink anchor got opened and hashed before the tool handler's own check
+ * refused it. One guard, both callers, no room for the halves to drift apart
+ * again.
+ *
+ * Returns null when contained, or a short reason when not.
+ */
+export async function containmentError(base: string, abs: string): Promise<string | null> {
+  if (escapesBase(path.relative(base, abs))) return "path escapes project root";
+  try {
+    const [baseReal, targetReal] = await Promise.all([fs.realpath(base), fs.realpath(abs)]);
+    if (escapesBase(path.relative(baseReal, targetReal))) return "path escapes project root via symlink";
+  } catch {
+    return "path cannot be resolved";
+  }
+  return null;
+}
+
 export function underPrefix(file: string, prefix: string): boolean {
   const p = toPosix(prefix).replace(/\/+$/, "");
   if (!p) return true;
@@ -296,7 +324,7 @@ async function loadConfig(root: string): Promise<SlimdexConfig> {
   return { ignoreDirs, ignorePaths, suffixes, extensions, exclude, maxFileBytes, present, warnings, summary };
 }
 
-async function walk(root: string, dir: string, acc: string[], cfg: SlimdexConfig): Promise<void> {
+async function walk(root: string, dir: string, acc: string[], cfg: SlimdexConfig, skippedLinks?: string[]): Promise<void> {
   let entries: import("node:fs").Dirent[];
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });
@@ -305,13 +333,23 @@ async function walk(root: string, dir: string, acc: string[], cfg: SlimdexConfig
   }
   for (const e of entries) {
     const full = path.join(dir, e.name);
+    // Dirent classification is lstat-based, so a symlink is neither isFile()
+    // nor isDirectory() and falls through every branch below. That is what
+    // keeps the walk inside the root — but silently: a pnpm workspace or a
+    // monorepo that links shared packages indexes NOTHING from them and says
+    // so nowhere, which is a wrong answer wearing the clothes of an empty one.
+    // Record them so index_repo can report the gap.
+    if (e.isSymbolicLink()) {
+      skippedLinks?.push(toPosix(path.relative(root, full)));
+      continue;
+    }
     if (e.isDirectory()) {
       if (cfg.ignoreDirs.has(e.name)) continue;
       // underPrefix, not startsWith: an ignorePath of "src/gen" must not also
       // swallow a sibling "src/generated".
       const relDir = toPosix(path.relative(root, full));
       if (cfg.ignorePaths.some((p) => underPrefix(relDir, p))) continue;
-      await walk(root, full, acc, cfg);
+      await walk(root, full, acc, cfg, skippedLinks);
     } else if (e.isFile()) {
       if (!cfg.extensions.has(path.extname(e.name).toLowerCase()) && !hasIndexedSuffix(e.name, cfg.suffixes)) continue;
       const rel = toPosix(path.relative(root, full));
@@ -328,6 +366,7 @@ export interface IndexResult {
   removed: number;
   totalFiles: number;
   skipped: number; // over maxFileBytes
+  skippedLinks: string[]; // symlinks the walk did not follow (kept inside root)
   generated: number; // build output detected by content, not by name
   // Files that were already indexed and whose CONTENT moved — an edit, as
   // opposed to a new file or a touched mtime. This is the only handle slimdex
@@ -352,7 +391,8 @@ export async function buildOrRefresh(root: string, force = false): Promise<Index
 
   const cfg = await loadConfig(root);
   const files: string[] = [];
-  await walk(root, root, files, cfg);
+  const skippedLinks: string[] = [];
+  await walk(root, root, files, cfg, skippedLinks);
 
   const present = new Set<string>();
   const parser = getParser();
@@ -435,6 +475,7 @@ export async function buildOrRefresh(root: string, force = false): Promise<Index
     removed,
     totalFiles: present.size,
     skipped,
+    skippedLinks,
     generated,
     changedPaths,
     truncated,

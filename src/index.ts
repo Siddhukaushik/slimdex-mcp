@@ -13,12 +13,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { promises as fs, constants as fsConstants } from "node:fs";
+import { promises as fs, constants as fsConstants, statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
 import { outline, formatOutline } from "./outline.js";
-import { buildOrRefresh, toPosix, underPrefix, escapesBase } from "./indexer.js";
+import { buildOrRefresh, toPosix, underPrefix, containmentError } from "./indexer.js";
 import { searchFiles, formatMatches, encodeCursor, decodeCursor } from "./search.js";
 import { buildGraph, dependents, toMermaid, nameRefEdges, mergeEdges } from "./graph.js";
 import { fileSkeleton, getSymbolContext, buildContext, enclosingSymbol } from "./intel.js";
@@ -56,15 +57,40 @@ function text(s: string) {
   return { content: [{ type: "text" as const, text: s }] };
 }
 
+export const SERVER_VERSION = "0.9.0";
+
+/**
+ * Which build is actually answering you.
+ *
+ * An MCP server is long-lived: it is started once and then serves every chat
+ * until something restarts it. So a fix can be written, compiled and committed
+ * while the process in front of you is still running yesterday's code — and
+ * from inside a session there was NO way to tell "the fix is broken" from
+ * "you're talking to an old process". That cost a real re-verification: three
+ * servers were live, all started before the build they were being tested
+ * against, and a fixed lookup looked broken.
+ *
+ * Reporting the running file's mtime alongside the version makes the
+ * difference visible without leaving the session — compare it against when you
+ * built, and a mismatch means restart, not debug.
+ */
+function buildStamp(): string {
+  try {
+    const self = fileURLToPath(import.meta.url);
+    const built = statSync(self).mtime.toISOString().replace("T", " ").slice(0, 19);
+    return `v${SERVER_VERSION}, build ${built}Z`;
+  } catch {
+    return `v${SERVER_VERSION}, build unknown`;
+  }
+}
+
 // Resolve a user-supplied path (relative or absolute) and refuse to escape ROOT.
 async function safeResolve(p: string): Promise<string> {
   const abs = path.isAbsolute(p) ? p : path.join(ROOT, p);
-  // escapesBase, not startsWith(".."), so a real in-root file named `..cache`
-  // is not mistaken for traversal.
-  if (escapesBase(path.relative(ROOT, abs))) throw new Error(`path escapes project root: ${p}`);
-  const [rootReal, targetReal] = await Promise.all([fs.realpath(ROOT), fs.realpath(abs)]);
-  if (escapesBase(path.relative(rootReal, targetReal)))
-    throw new Error(`path escapes project root via symlink: ${p}`);
+  // One shared guard (lexical + realpath), so this check and dedupe's cannot
+  // drift into different halves of the same rule.
+  const bad = await containmentError(ROOT, abs);
+  if (bad) throw new Error(`${bad}: ${p}`);
   return abs;
 }
 
@@ -217,8 +243,18 @@ tool(
     // for the write half of `stats`.
     await recordExternalEdits(ROOT, r.changedPaths.length);
 
+    // Symlinks are skipped to keep the walk inside the root, but skipping them
+    // SILENTLY turns a pnpm workspace or a linked monorepo package into an
+    // empty answer that looks like a complete one. Name them.
+    const links = r.skippedLinks ?? [];
+    const linkNote = links.length
+      ? `\n⚠ ${links.length} symlink(s) not followed, so nothing under them is indexed — ` +
+        `${links.slice(0, 5).join(", ")}${links.length > 5 ? `, +${links.length - 5} more` : ""}. ` +
+        `Common in pnpm/monorepo layouts: index those packages at their real path, or point SLIMDEX_ROOT at the workspace root.`
+      : "";
+
     return (
-      `Indexed ${r.totalFiles} files under ${ROOT}\n` +
+      `Indexed ${r.totalFiles} files under ${ROOT}  (slimdex ${buildStamp()})\n` +
       `  parsed: ${r.parsed}  reused(cache): ${r.reused}  removed: ${r.removed}` +
       (r.skipped ? `  skipped(too large): ${r.skipped}` : "") +
       (r.generated ? `  skipped(generated/minified): ${r.generated}` : "") +
@@ -226,6 +262,7 @@ tool(
       `\n  symbols indexed: ${symbols}  parser: ${r.parser}\n` +
       `  config: ${r.config}${warn}\n` +
       `Cache: ${path.join(ROOT, ".slimdex", "index.json")}` +
+      linkNote +
       snapNote
     );
   }
@@ -261,7 +298,11 @@ tool(
   async ({ path: p }) => {
     const abs = await safeResolve(p);
     const src = await readFileCached(abs);
-    return formatOutline(toPosix(path.relative(ROOT, abs)), outline(src), src.split(/\r?\n/).length);
+    // The path is passed so the outliner can pick the right extractor — without
+    // it, a stylesheet reported "(no declarations detected)" from this tool
+    // while get_file_skeleton mapped the same file in full.
+    const rel = toPosix(path.relative(ROOT, abs));
+    return formatOutline(rel, outline(src, 400, rel), src.split(/\r?\n/).length);
   }
 );
 
@@ -408,13 +449,31 @@ tool(
   },
   async ({ name, kind, pathPrefix, limit, offset }) => {
     const index = await loadIndex(ROOT);
-    const all: string[] = [];
-    for (const [file, entry] of Object.entries(index.files)) {
-      if (pathPrefix && !underPrefix(file, pathPrefix)) continue;
-      for (const s of entry.symbols)
-        if (s.name === name && (!kind || s.kind === kind)) all.push(`${file}:${s.line}:${s.col}  ${s.kind} ${s.name}`);
+    // A CSS rule is indexed under its selector — ".hub-allow-overflow" — but the
+    // name you have in hand came from JSX: className="hub-section
+    // hub-allow-overflow", with no dots anywhere. So the copy-paste path was the
+    // one that failed, into a message telling you to spend a second call on
+    // search_symbols. Try the selector forms before declaring a miss.
+    const candidates = /^[.#]/.test(name) ? [name] : [name, `.${name}`, `#${name}`];
+    let matchedAs = name;
+    let all: string[] = [];
+    for (const candidate of candidates) {
+      const hits: string[] = [];
+      for (const [file, entry] of Object.entries(index.files)) {
+        if (pathPrefix && !underPrefix(file, pathPrefix)) continue;
+        for (const s of entry.symbols)
+          if (s.name === candidate && (!kind || s.kind === kind)) hits.push(`${file}:${s.line}:${s.col}  ${s.kind} ${s.name}`);
+      }
+      if (hits.length) {
+        all = hits;
+        matchedAs = candidate;
+        break;
+      }
     }
     if (!all.length) return `No definition indexed for "${name}". Try search_symbols for a fuzzy match.`;
+    // Say so when the bare name was resolved as a selector, so the caller learns
+    // the indexed form rather than wondering why it worked.
+    const resolvedNote = matchedAs === name ? "" : `  (matched as "${matchedAs}")`;
     // This tool had NO limit. Every sibling (search_code, find_references,
     // search_symbols) pages; find_definition returned every hit because "a
     // definition" sounds singular. On Elasticsearch — 31k files, 316k symbols —
@@ -430,7 +489,7 @@ tool(
         ? `\n… ${all.length - shown} more. Narrow with pathPrefix${kind ? "" : ' or kind:"class"'}, or page with offset:${shown}.`
         : "";
     return (
-      `${t(`${all.length} definition candidate(s) for "${name}"`, `${all.length} def(s) "${name}"`)}` +
+      `${t(`${all.length} definition candidate(s) for "${name}"`, `${all.length} def(s) "${name}"`)}${resolvedNote}` +
       `${all.length > page.length ? `, showing ${start + 1}-${shown}` : ""}:\n${page.join("\n")}${more}`
     );
   }
@@ -700,7 +759,15 @@ tool(
         }
         if (found.length > 1)
           return (
-            `"${sym}" has ${found.length} definitions — narrow with pathPrefix, or pass path + line to pick one:\n` +
+            // Only offer pathPrefix when it can actually narrow anything. A CSS
+        // selector repeats inside ONE file as a matter of course (base rule
+        // plus media overrides), and telling someone to scope by path there is
+        // advice with no exit.
+        `"${sym}" has ${found.length} definitions — ${
+          new Set(found.map((d) => d.file)).size === 1
+            ? "all in the same file, so pathPrefix cannot help; pass path + line to pick one"
+            : "narrow with pathPrefix, or pass path + line to pick one"
+        }:\n` +
             candidateList(found.map((d) => `  ${d.file}:${d.line}  ${d.kind}`))
           );
         file = found[0].file;
@@ -786,7 +853,7 @@ tool(
       after: z
         .string()
         .optional()
-        .describe("INSERT mode: add `body` as a NEW symbol immediately after this existing symbol's closing brace."),
+        .describe("INSERT mode: add `body` as a NEW symbol immediately after this existing symbol's closing brace. Pin which occurrence with path + line when the name repeats inside one file (normal for CSS)."),
       before: z
         .string()
         .optional()
@@ -884,10 +951,11 @@ tool(
     // ---- INSERT mode: a NEW symbol next to an existing anchor ----
     if (after || before) {
       if (after && before) return "Give either after or before, not both.";
-      if (name || p || line)
-        return "after/before is INSERT mode — drop name/path/line (those replace an existing symbol) and give only the anchor plus body.";
+      if (name)
+        return "after/before is INSERT mode — drop `name` (that replaces an existing symbol) and give only the anchor plus body.";
+      if ((p && !line) || (line && !p)) return "path and line go together when pinning an insert anchor.";
       if (typeof body !== "string" || !body.length) return "body (the new definition to insert) is required.";
-      return insertBesideSymbol((after ?? before)!, after ? "after" : "before", body, pathPrefix);
+      return insertBesideSymbol((after ?? before)!, after ? "after" : "before", body, pathPrefix, p, line);
     }
 
     if (typeof body !== "string" || !body.length) return "body (the complete replacement definition) is required.";
@@ -955,9 +1023,32 @@ async function insertBesideSymbol(
   anchor: string,
   position: "before" | "after",
   body: string,
-  pathPrefix?: string
+  pathPrefix?: string,
+  anchorPath?: string,
+  anchorLine?: number
 ): Promise<string> {
   const index = await loadIndex(ROOT);
+
+  // An explicit path+line pins WHICH occurrence, which pathPrefix cannot do
+  // when the duplicates share a file. For a stylesheet that is the normal
+  // shape, not an edge case: a base rule plus two media-query overrides means
+  // `.swarm-arrow` legitimately appears three times in one file, and the
+  // name-only anchor was therefore unusable exactly where CSS support was
+  // supposed to help.
+  if (anchorPath && anchorLine) {
+    let abs: string;
+    try {
+      abs = await safeResolve(anchorPath);
+    } catch {
+      return `Cannot resolve ${anchorPath} (does it exist?).`;
+    }
+    const file = toPosix(path.relative(ROOT, abs));
+    const entry = index.files[file];
+    if (entry && (await changedSinceIndex(file, entry)))
+      return `${file} changed since index_repo — re-index before inserting into it.`;
+    return writeInsert(file, anchorLine, `${file}:${anchorLine}`, position, body);
+  }
+
   let found: { file: string; line: number; kind: string }[] = [];
   for (const [f, entry] of Object.entries(index.files))
     for (const s of entry.symbols) if (s.name === anchor) found.push({ file: f, line: s.line, kind: s.kind });
@@ -970,19 +1061,38 @@ async function insertBesideSymbol(
         found.map((d) => `  ${d.file}:${d.line}  ${d.kind}`).join("\n");
     found = scoped;
   }
-  if (found.length > 1)
+  if (found.length > 1) {
+    // Only suggest pathPrefix when it can actually help. Every duplicate in one
+    // file — the normal shape of a stylesheet, where a base rule plus media
+    // overrides repeat a selector — makes pathPrefix useless, and saying it
+    // anyway sends the caller down a road with no exit.
+    const sameFile = new Set(found.map((d) => d.file)).size === 1;
+    const how = sameFile
+      ? `all ${found.length} are in the same file, so pathPrefix cannot help — pin one with path + line`
+      : `narrow with pathPrefix, or pin one with path + line`;
     return (
-      `"${anchor}" has ${found.length} definitions — narrow with pathPrefix, I won't guess which one to insert beside:\n` +
+      `"${anchor}" has ${found.length} definitions — ${how}. I won't guess which one to insert beside:\n` +
       found.map((d) => `  ${d.file}:${d.line}  ${d.kind}`).join("\n")
     );
+  }
 
-  const { file, line: anchorLine } = found[0];
+  const { file, line: resolvedLine } = found[0];
   const entry = index.files[file];
   // An anchor whose file has drifted means the line number is a guess, and a
   // guessed insertion point puts a method inside someone else's function body.
   if (entry && (await changedSinceIndex(file, entry)))
     return `${file} changed since index_repo — re-index before inserting into it.`;
+  return writeInsert(file, resolvedLine, anchor, position, body);
+}
 
+/** The write half, shared by the name-resolved and path+line-pinned anchors. */
+async function writeInsert(
+  file: string,
+  anchorLine: number,
+  label: string,
+  position: "before" | "after",
+  body: string
+): Promise<string> {
   const abs = path.join(ROOT, file);
   let source: string;
   try {
@@ -1016,7 +1126,7 @@ async function insertBesideSymbol(
       ? "re-indexed, a symbol is present in the inserted range"
       : "⚠ re-indexed but no symbol parsed in the inserted range — check the body is a valid declaration";
   return (
-    `Inserted ${position} ${anchor} in ${file}: new lines ${res.start}-${res.end} ` +
+    `Inserted ${position} ${label} in ${file}: new lines ${res.start}-${res.end} ` +
     `(${res.end - res.start + 1} line(s)). ${snapNote}; ${parseNote}.`
   );
 }
@@ -1390,9 +1500,12 @@ tool(
     if (session) {
       const s = await loadSessionStats(ROOT);
       if (!Object.keys(s.tools).length) return "No tool calls recorded since the last checkpoint (or since this server started).";
-      return `SINCE ${s.since} (this process / last checkpoint — not the repo's all-time totals):\n${formatStats(s)}`;
+      return `slimdex ${buildStamp()}\nSINCE ${s.since} (this process / last checkpoint — not the repo's all-time totals):\n${formatStats(s)}`;
     }
-    return formatStats(await loadStats(ROOT));
+    // The build stamp rides on stats because that is where you look when a
+    // result surprises you — and "the process predates the fix" is the answer
+    // you cannot otherwise get from inside a session.
+    return `slimdex ${buildStamp()}\n${formatStats(await loadStats(ROOT))}`;
   }
 );
 
@@ -1531,7 +1644,7 @@ tool(
     const freshLine = staleCount
       ? `\n⚠ ${staleCount} file(s) changed since the index was built — run index_repo before trusting line numbers.`
       : "";
-    return coldStart + composeBrief({ index, facts: mem.facts, recap, root: ROOT }) + freshLine;
+    return coldStart + composeBrief({ index, facts: mem.facts, recap, root: ROOT, build: buildStamp() }) + freshLine;
   }
 );
 
@@ -1750,7 +1863,7 @@ async function main() {
     profile() === "lean"
       ? `tools=${advertisedCount} advertised (lean profile; ${Object.keys(handlers).length} total, all reachable via batch)`
       : `tools=${Object.keys(handlers).length}`;
-  console.error(`slimdex-mcp v0.9.0 ready. root=${ROOT}  ${surface}`);
+  console.error(`slimdex-mcp ${buildStamp()} ready. root=${ROOT}  ${surface}`);
   // Opt-in auto-reindex on file change. Off unless SLIMDEX_WATCH is truthy.
   if (["1", "true", "yes"].includes((process.env.SLIMDEX_WATCH || "").toLowerCase())) {
     const { startWatcher } = await import("./watch.js");

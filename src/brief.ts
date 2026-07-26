@@ -57,6 +57,8 @@ export interface BriefInput {
   facts: MemoryFact[];
   recap: string; // pre-rendered journal recap (formatRecap output)
   root: string;
+  /** Version + build time of the running server, so a stale process is visible. */
+  build?: string;
 }
 
 /** Extensions whose real behaviour is decided by the rendered page, not the source. */
@@ -90,7 +92,7 @@ export function blindSpots(byExt: Map<string, number>, fileCount: number): strin
 }
 
 /** Compose the human-readable brief. Pure over its inputs for testability. */
-export function composeBrief({ index, facts, recap, root }: BriefInput): string {
+export function composeBrief({ index, facts, recap, root, build }: BriefInput): string {
   const files = Object.entries(index.files);
   const fileCount = files.length;
   const symCount = files.reduce((n, [, f]) => n + f.symbols.length, 0);
@@ -112,7 +114,7 @@ export function composeBrief({ index, facts, recap, root }: BriefInput): string 
   for (const [, f] of files) for (const s of f.symbols) liveSymbols.add(s.name);
 
   const lines: string[] = [];
-  lines.push(`Onboarding brief for ${root}`);
+  lines.push(`Onboarding brief for ${root}${build ? `  (slimdex ${build})` : ""}`);
   lines.push(`  Repo: ${fileCount} indexed file(s), ${symCount} symbol(s). Languages: ${langs || "n/a"}.`);
   lines.push(`  ${blindSpots(byExt, fileCount)}`);
   lines.push("");

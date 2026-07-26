@@ -8,6 +8,7 @@
 // hundred tokens instead of dumping a multi-thousand-token file.
 
 import { scanLines } from "./lexer.js";
+import { extractSymbols, CSS_FILE } from "./symbols.js";
 import { pad, padNum } from "./terse.js";
 
 export interface OutlineEntry {
@@ -105,7 +106,30 @@ function isComment(line: string): boolean {
   );
 }
 
-export function outline(source: string, maxEntries = 400): OutlineEntry[] {
+export function outline(source: string, maxEntries = 400, file?: string): OutlineEntry[] {
+  // Stylesheets: delegate to the ONE extractor rather than growing a second set
+  // of CSS rules here. This file and symbols.ts are parallel implementations of
+  // "what is a declaration", and that is exactly how a fix to one silently
+  // misses the other — CSS support landed in symbols.ts and outline_file went
+  // on reporting "(no declarations detected)" for the same file that
+  // get_file_skeleton mapped in full. Delegating means the next language cannot
+  // repeat it.
+  if (file && CSS_FILE.test(file)) {
+    const lines = source.split(/\r?\n/);
+    // One entry per LINE. A selector list indexes every class in it, so
+    // `.hub-section.hub-allow-overflow {` is two symbols on one line and would
+    // otherwise print the identical row twice — the same defect this already
+    // had to fix in fileSkeleton.
+    const seen = new Set<number>();
+    const out: OutlineEntry[] = [];
+    for (const s of extractSymbols(source, maxEntries, file)) {
+      if (seen.has(s.line)) continue;
+      seen.add(s.line);
+      out.push({ line: s.line, kind: s.kind, text: (lines[s.line - 1] ?? "").trim().slice(0, 200) });
+    }
+    return out;
+  }
+
   const entries: OutlineEntry[] = [];
 
   // Matched against the masked line so declaration-shaped prose inside strings

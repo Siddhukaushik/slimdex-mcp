@@ -10,9 +10,17 @@
 //
 // So: explicit, idempotent, reversible, and it prints exactly what it changed.
 //
-//   npm run install-hook              # this project's .claude/settings.json
-//   npm run install-hook -- --global  # ~/.claude/settings.json (all repos)
+//   npm run install-hook              # <repo>/.claude/settings.json      (SHARED - committed)
+//   npm run install-hook -- --local   # <repo>/.claude/settings.local.json (yours - gitignored)
+//   npm run install-hook -- --global  # ~/.claude/settings.json            (yours - every repo)
 //   npm run install-hook -- --uninstall
+//
+// Pick --local or --global for a SHARED repo. The hook command contains an
+// absolute path to this clone, so committing it to <repo>/.claude/settings.json
+// hands every teammate a path that does not exist on their machine. The default
+// is the committed file because that is the documented Claude Code convention
+// for project settings, but it is the wrong choice for a repo you don't own —
+// hence the warning it prints.
 //
 // A global install is safe: the hook exits silently in any repo with no
 // .slimdex index, so it can never point an agent at a server that isn't there.
@@ -24,6 +32,7 @@ import { fileURLToPath } from "node:url";
 
 const args = new Set(process.argv.slice(2));
 const GLOBAL = args.has("--global");
+const LOCAL = args.has("--local");
 const UNINSTALL = args.has("--uninstall");
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -37,7 +46,10 @@ const MATCHER = "Edit|MultiEdit|Write|Read";
 
 const settingsPath = GLOBAL
   ? path.join(os.homedir(), ".claude", "settings.json")
-  : path.join(process.cwd(), ".claude", "settings.json");
+  : path.join(process.cwd(), ".claude", LOCAL ? "settings.local.json" : "settings.json");
+
+/** True when we are about to write a machine-specific path into a COMMITTED file. */
+const sharedFile = !GLOBAL && !LOCAL;
 
 async function readSettings() {
   try {
@@ -97,3 +109,16 @@ silent everywhere else, including repos with no .slimdex index.
 
 Set SLIMDEX_HOOK_MODE=block once you have watched it for a session and agree
 with what it flagged. Undo any time with: npm run install-hook -- --uninstall`);
+
+if (sharedFile) {
+  console.log(`
+⚠ ${path.basename(settingsPath)} is the SHARED, COMMITTED settings file, and the command above
+  contains an absolute path to your clone. On a teammate's machine that path
+  does not exist, so committing this hands them a hook that cannot run.
+
+  On a repo you share, re-run with one of:
+    npm run install-hook -- --local    (same repo, .claude/settings.local.json, gitignored)
+    npm run install-hook -- --global   (~/.claude/settings.json, all your repos)
+
+  Global is safe: the hook exits silently in any repo with no .slimdex index.`);
+}
