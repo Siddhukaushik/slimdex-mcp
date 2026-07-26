@@ -13,12 +13,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { promises as fs, constants as fsConstants } from "node:fs";
+import { promises as fs, constants as fsConstants, statSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
 import { outline, formatOutline } from "./outline.js";
-import { buildOrRefresh, toPosix, underPrefix, escapesBase } from "./indexer.js";
+import { buildOrRefresh, toPosix, underPrefix, containmentError } from "./indexer.js";
 import { searchFiles, formatMatches, encodeCursor, decodeCursor } from "./search.js";
 import { buildGraph, dependents, toMermaid, nameRefEdges, mergeEdges } from "./graph.js";
 import { fileSkeleton, getSymbolContext, buildContext, enclosingSymbol } from "./intel.js";
@@ -56,15 +57,40 @@ function text(s: string) {
   return { content: [{ type: "text" as const, text: s }] };
 }
 
+export const SERVER_VERSION = "0.9.0";
+
+/**
+ * Which build is actually answering you.
+ *
+ * An MCP server is long-lived: it is started once and then serves every chat
+ * until something restarts it. So a fix can be written, compiled and committed
+ * while the process in front of you is still running yesterday's code — and
+ * from inside a session there was NO way to tell "the fix is broken" from
+ * "you're talking to an old process". That cost a real re-verification: three
+ * servers were live, all started before the build they were being tested
+ * against, and a fixed lookup looked broken.
+ *
+ * Reporting the running file's mtime alongside the version makes the
+ * difference visible without leaving the session — compare it against when you
+ * built, and a mismatch means restart, not debug.
+ */
+function buildStamp(): string {
+  try {
+    const self = fileURLToPath(import.meta.url);
+    const built = statSync(self).mtime.toISOString().replace("T", " ").slice(0, 19);
+    return `v${SERVER_VERSION}, build ${built}Z`;
+  } catch {
+    return `v${SERVER_VERSION}, build unknown`;
+  }
+}
+
 // Resolve a user-supplied path (relative or absolute) and refuse to escape ROOT.
 async function safeResolve(p: string): Promise<string> {
   const abs = path.isAbsolute(p) ? p : path.join(ROOT, p);
-  // escapesBase, not startsWith(".."), so a real in-root file named `..cache`
-  // is not mistaken for traversal.
-  if (escapesBase(path.relative(ROOT, abs))) throw new Error(`path escapes project root: ${p}`);
-  const [rootReal, targetReal] = await Promise.all([fs.realpath(ROOT), fs.realpath(abs)]);
-  if (escapesBase(path.relative(rootReal, targetReal)))
-    throw new Error(`path escapes project root via symlink: ${p}`);
+  // One shared guard (lexical + realpath), so this check and dedupe's cannot
+  // drift into different halves of the same rule.
+  const bad = await containmentError(ROOT, abs);
+  if (bad) throw new Error(`${bad}: ${p}`);
   return abs;
 }
 
@@ -217,8 +243,18 @@ tool(
     // for the write half of `stats`.
     await recordExternalEdits(ROOT, r.changedPaths.length);
 
+    // Symlinks are skipped to keep the walk inside the root, but skipping them
+    // SILENTLY turns a pnpm workspace or a linked monorepo package into an
+    // empty answer that looks like a complete one. Name them.
+    const links = r.skippedLinks ?? [];
+    const linkNote = links.length
+      ? `\n⚠ ${links.length} symlink(s) not followed, so nothing under them is indexed — ` +
+        `${links.slice(0, 5).join(", ")}${links.length > 5 ? `, +${links.length - 5} more` : ""}. ` +
+        `Common in pnpm/monorepo layouts: index those packages at their real path, or point SLIMDEX_ROOT at the workspace root.`
+      : "";
+
     return (
-      `Indexed ${r.totalFiles} files under ${ROOT}\n` +
+      `Indexed ${r.totalFiles} files under ${ROOT}  (slimdex ${buildStamp()})\n` +
       `  parsed: ${r.parsed}  reused(cache): ${r.reused}  removed: ${r.removed}` +
       (r.skipped ? `  skipped(too large): ${r.skipped}` : "") +
       (r.generated ? `  skipped(generated/minified): ${r.generated}` : "") +
@@ -226,6 +262,7 @@ tool(
       `\n  symbols indexed: ${symbols}  parser: ${r.parser}\n` +
       `  config: ${r.config}${warn}\n` +
       `Cache: ${path.join(ROOT, ".slimdex", "index.json")}` +
+      linkNote +
       snapNote
     );
   }
@@ -722,7 +759,15 @@ tool(
         }
         if (found.length > 1)
           return (
-            `"${sym}" has ${found.length} definitions — narrow with pathPrefix, or pass path + line to pick one:\n` +
+            // Only offer pathPrefix when it can actually narrow anything. A CSS
+        // selector repeats inside ONE file as a matter of course (base rule
+        // plus media overrides), and telling someone to scope by path there is
+        // advice with no exit.
+        `"${sym}" has ${found.length} definitions — ${
+          new Set(found.map((d) => d.file)).size === 1
+            ? "all in the same file, so pathPrefix cannot help; pass path + line to pick one"
+            : "narrow with pathPrefix, or pass path + line to pick one"
+        }:\n` +
             candidateList(found.map((d) => `  ${d.file}:${d.line}  ${d.kind}`))
           );
         file = found[0].file;
@@ -1455,9 +1500,12 @@ tool(
     if (session) {
       const s = await loadSessionStats(ROOT);
       if (!Object.keys(s.tools).length) return "No tool calls recorded since the last checkpoint (or since this server started).";
-      return `SINCE ${s.since} (this process / last checkpoint — not the repo's all-time totals):\n${formatStats(s)}`;
+      return `slimdex ${buildStamp()}\nSINCE ${s.since} (this process / last checkpoint — not the repo's all-time totals):\n${formatStats(s)}`;
     }
-    return formatStats(await loadStats(ROOT));
+    // The build stamp rides on stats because that is where you look when a
+    // result surprises you — and "the process predates the fix" is the answer
+    // you cannot otherwise get from inside a session.
+    return `slimdex ${buildStamp()}\n${formatStats(await loadStats(ROOT))}`;
   }
 );
 
@@ -1596,7 +1644,7 @@ tool(
     const freshLine = staleCount
       ? `\n⚠ ${staleCount} file(s) changed since the index was built — run index_repo before trusting line numbers.`
       : "";
-    return coldStart + composeBrief({ index, facts: mem.facts, recap, root: ROOT }) + freshLine;
+    return coldStart + composeBrief({ index, facts: mem.facts, recap, root: ROOT, build: buildStamp() }) + freshLine;
   }
 );
 
@@ -1815,7 +1863,7 @@ async function main() {
     profile() === "lean"
       ? `tools=${advertisedCount} advertised (lean profile; ${Object.keys(handlers).length} total, all reachable via batch)`
       : `tools=${Object.keys(handlers).length}`;
-  console.error(`slimdex-mcp v0.9.0 ready. root=${ROOT}  ${surface}`);
+  console.error(`slimdex-mcp ${buildStamp()} ready. root=${ROOT}  ${surface}`);
   // Opt-in auto-reindex on file change. Off unless SLIMDEX_WATCH is truthy.
   if (["1", "true", "yes"].includes((process.env.SLIMDEX_WATCH || "").toLowerCase())) {
     const { startWatcher } = await import("./watch.js");

@@ -101,6 +101,48 @@ Related honest limits:
 - `changed_files` gives blast radius, not hunks. Exact patch review is `git diff`.
 - On a repo of tiny files, plain reads are fine. No ceremony.
 
+## Why the build stamp is on `stats` and `brief`
+
+An MCP server is long-lived: started once, then serving every chat until
+something restarts it. So a fix can be written, compiled and committed while
+the process answering you is still running yesterday's code — and from inside a
+session there was no way to tell "the fix is broken" from "you're talking to an
+old process".
+
+That cost a real re-verification. Three servers were live, all started before
+the build they were being tested against, and a fixed lookup looked broken. The
+only way to know was comparing process start times against a file mtime from
+outside the tool.
+
+`stats` and `brief` now print the running file's build time. If a result
+surprises you, check that line before debugging.
+
+## Why symlinks are skipped, and now said out loud
+
+The walker classifies entries with `Dirent`, which is lstat-based, so a symlink
+is neither `isFile()` nor `isDirectory()` and falls through every branch. That
+is what keeps indexing inside the root — a link pointing at `/etc` cannot drag
+the filesystem in.
+
+But it was silent, and a pnpm workspace or a monorepo that links shared
+packages then indexes **nothing** from them while reporting success. An empty
+answer that looks like a complete one is the failure mode this codebase refuses
+everywhere else, so `index_repo` now names the links it did not follow.
+
+## Why containment is one function
+
+`safeResolve` checks lexically and again after `realpath`. Both halves are
+needed for different reasons: the lexical pass stops `../../secrets` and the
+Windows cross-drive case — `path.relative("C:\repo", "D:\secrets")` returns
+`D:\secrets`, which contains no `..` at all — while the realpath pass stops a
+link inside the repo pointing outside it, which no string inspection can see.
+
+Dedupe had only the lexical half, so a symlink anchor was opened and hashed
+before the handler's own check refused it. The bytes never reached the caller,
+but the read happened. Both callers now share one exported guard, because the
+same asymmetry had already been fixed once at the tool layer and reappeared one
+level down.
+
 ## Automatic behaviour worth knowing
 
 - **Repeat suppression.** A second identical `read_lines` / `get_file_skeleton`
