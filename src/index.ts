@@ -39,7 +39,7 @@ import { invalidateFileCache, readFileCached } from "./fscache.js";
 import { journalRecord, formatRecap, recentHints, flushJournalSync } from "./journal.js";
 import { takeSnapshot, newestSnapshotAgeMs } from "./snapshot.js";
 import { isTestFile } from "./testlink.js";
-import { spliceSymbol, spliceSymbols, type PlannedEdit } from "./edit.js";
+import { spliceSymbol, spliceSymbols, insertAtSymbol, type PlannedEdit } from "./edit.js";
 import { composeBrief } from "./brief.js";
 import { rankIntentDetailed } from "./intent.js";
 import { isStale, stalenessNote } from "./freshness.js";
@@ -339,9 +339,33 @@ tool(
     // the agent off to grep with the wrong lesson. Name the two real causes.
     let zeroHint = "";
     if (matches.length === 0 && !cursor) {
-      zeroHint = !regex && /[|()\[\]{}.*+?^$\\]/.test(pattern)
-        ? `\n  Note: "${pattern}" contains regex characters but regex mode is OFF (search_code is literal by default). Retry with regex:true for alternation/wildcards, or use find_definition/find_references for a symbol name.`
-        : `\n  Note: searched ${files.length} indexed file(s). If the file is new or just changed, run index_repo; for a symbol name, find_definition/find_references is sharper than text search.`;
+      const parts: string[] = [`searched ${files.length} indexed file(s)`];
+      // A call-shaped pattern ("foo(") is a symbol question wearing text-search
+      // clothes, and the symbol tools answer it without the caller guessing at
+      // whitespace or argument lists.
+      const callShaped = /^([A-Za-z_$][A-Za-z0-9_$]*)\s*\($/.exec(pattern)?.[1];
+      if (callShaped)
+        parts.push(`"${callShaped}" looks like a symbol — find_definition/find_references "${callShaped}" is sharper, and does not depend on the exact spacing before "("`);
+      if (!regex && /[|()\[\]{}.*+?^$\\]/.test(pattern)) {
+        // The old hint told everyone with a metacharacter to "retry with
+        // regex:true". For a pattern like `foo(` that advice does not just miss
+        // — it ERRORS ("Unterminated group"), costing a second wasted round trip
+        // to learn that literal mode had been right all along. So only suggest
+        // regex mode when the pattern would actually compile as one.
+        let compiles = true;
+        try {
+          new RegExp(pattern);
+        } catch {
+          compiles = false;
+        }
+        parts.push(
+          compiles
+            ? `the pattern was matched LITERALLY (regex is off by default) — pass regex:true if you meant it as a pattern`
+            : `note "${pattern}" is not a valid regex, so regex:true would fail to compile — literal mode (used here) is the right one for it, and the metacharacters were matched as plain text`
+        );
+      }
+      parts.push(`if the file is new or just changed, run index_repo`);
+      zeroHint = `\n  Note: ${parts.join("; ")}.`;
     }
     // Many hits piled into one big file is the signature of "I am hunting for
     // where a feature lives", and a text search answers that badly — it returns
@@ -742,7 +766,11 @@ tool(
   {
     title: "Replace a symbol's body by name (write)",
     description:
-      "Overwrite a symbol's full definition, addressed by NAME — you never re-send the old body to locate the edit. The " +
+      "Write a symbol by NAME — you never re-send the old body to locate the edit. Two modes: REPLACE (name/path+line " +
+      "plus body) overwrites an existing definition; INSERT (after:\"X\" or before:\"X\" plus body) adds a NEW symbol " +
+      "next to an existing one, which is what you want for 'add a method beside the related ones' — the anchor's own " +
+      "span comes from the index, so `after` means after its closing brace, not its signature line. Insert puts `body` " +
+      "in verbatim: indent it for the file, and include a leading/trailing newline if you want a blank line. " +
       "range comes from the index; the file is SNAPSHOTTED first (.slimdex/snapshots), re-indexed after, and the new line " +
       "span is reported so you don't re-read to verify. Safe to mix with ordinary edit tools: if the file moved under the " +
       "index, a NAME is re-resolved against a fresh parse automatically (an explicit path+line still refuses, since that " +
@@ -755,6 +783,18 @@ tool(
       path: z.string().optional().describe("File path (use with line instead of name)."),
       line: z.number().int().min(1).optional().describe("Definition line (use with path)."),
       body: z.string().optional().describe("The complete new definition, replacing the old one verbatim."),
+      after: z
+        .string()
+        .optional()
+        .describe("INSERT mode: add `body` as a NEW symbol immediately after this existing symbol's closing brace."),
+      before: z
+        .string()
+        .optional()
+        .describe("INSERT mode: add `body` as a NEW symbol immediately before this existing symbol."),
+      pathPrefix: z
+        .string()
+        .optional()
+        .describe("Disambiguate the after/before anchor when the name exists in several files."),
       edits: z
         .array(
           z.object({
@@ -770,7 +810,7 @@ tool(
         .describe("Several replacements, applied atomically. Each entry takes name, or path+line, plus body."),
     },
   },
-  async ({ name, path: p, line, body, edits }) => {
+  async ({ name, path: p, line, body, after, before, pathPrefix, edits }) => {
     // Resolve one edit target to a repo-relative file + definition line, or a
     // refusal string. Shared by both paths so a batch cannot resolve targets by
     // looser rules than a single edit does.
@@ -841,6 +881,15 @@ tool(
 
     if (edits?.length) return replaceMany(edits, resolve);
 
+    // ---- INSERT mode: a NEW symbol next to an existing anchor ----
+    if (after || before) {
+      if (after && before) return "Give either after or before, not both.";
+      if (name || p || line)
+        return "after/before is INSERT mode — drop name/path/line (those replace an existing symbol) and give only the anchor plus body.";
+      if (typeof body !== "string" || !body.length) return "body (the new definition to insert) is required.";
+      return insertBesideSymbol((after ?? before)!, after ? "after" : "before", body, pathPrefix);
+    }
+
     if (typeof body !== "string" || !body.length) return "body (the complete replacement definition) is required.";
     const index = await loadIndex(ROOT);
     const target = await resolve(index, { name, path: p, line });
@@ -888,6 +937,89 @@ tool(
     );
   }
 );
+
+/**
+ * INSERT a new symbol beside an existing one.
+ *
+ * The gap this closes: replace_symbol could only overwrite something that
+ * already existed, so "add a method next to the related ones" — one of the
+ * most common writes there is — fell back to a generic edit tool and re-sent
+ * surrounding code to anchor itself. That is the exact cost this module exists
+ * to avoid, and the flagship write tool had no answer for it.
+ *
+ * Everything else is deliberately identical to the replace path: same anchor
+ * resolution, same staleness refusal, same snapshot before writing, same
+ * re-index after, same honest reporting when the re-index is what failed.
+ */
+async function insertBesideSymbol(
+  anchor: string,
+  position: "before" | "after",
+  body: string,
+  pathPrefix?: string
+): Promise<string> {
+  const index = await loadIndex(ROOT);
+  let found: { file: string; line: number; kind: string }[] = [];
+  for (const [f, entry] of Object.entries(index.files))
+    for (const s of entry.symbols) if (s.name === anchor) found.push({ file: f, line: s.line, kind: s.kind });
+  if (found.length === 0)
+    return `No symbol "${anchor}" indexed to anchor against. Run index_repo, or check the name.`;
+  if (pathPrefix) {
+    const scoped = found.filter((d) => underPrefix(d.file, pathPrefix));
+    if (scoped.length === 0)
+      return `"${anchor}" is indexed, but not under "${pathPrefix}". Found in:\n` +
+        found.map((d) => `  ${d.file}:${d.line}  ${d.kind}`).join("\n");
+    found = scoped;
+  }
+  if (found.length > 1)
+    return (
+      `"${anchor}" has ${found.length} definitions — narrow with pathPrefix, I won't guess which one to insert beside:\n` +
+      found.map((d) => `  ${d.file}:${d.line}  ${d.kind}`).join("\n")
+    );
+
+  const { file, line: anchorLine } = found[0];
+  const entry = index.files[file];
+  // An anchor whose file has drifted means the line number is a guess, and a
+  // guessed insertion point puts a method inside someone else's function body.
+  if (entry && (await changedSinceIndex(file, entry)))
+    return `${file} changed since index_repo — re-index before inserting into it.`;
+
+  const abs = path.join(ROOT, file);
+  let source: string;
+  try {
+    source = await readFileCached(abs);
+  } catch {
+    return `Cannot read ${file}.`;
+  }
+
+  const snap = await takeSnapshot(ROOT, [file]);
+  let res: ReturnType<typeof insertAtSymbol>;
+  try {
+    res = insertAtSymbol(source, anchorLine, body, position);
+  } catch (e) {
+    return `${file}: ${(e as Error).message} — nothing was written.`;
+  }
+  await fs.writeFile(abs, res.text, "utf8");
+  invalidateFileCache(abs);
+
+  let indexErr: string | null = null;
+  try {
+    await buildOrRefresh(ROOT, false);
+  } catch (e) {
+    indexErr = (e as Error).message;
+  }
+  const fresh = await loadIndex(ROOT);
+  const parsed = (fresh.files[file]?.symbols ?? []).some((s) => s.line >= res.start && s.line <= res.end);
+  const snapNote = snap.files > 0 ? `snapshot saved (${snap.dir})` : "snapshot skipped (file too large or unreadable)";
+  const parseNote = indexErr
+    ? `⚠ THE FILE WAS WRITTEN, but re-indexing failed (${indexErr}) — do NOT re-apply; run index_repo`
+    : parsed
+      ? "re-indexed, a symbol is present in the inserted range"
+      : "⚠ re-indexed but no symbol parsed in the inserted range — check the body is a valid declaration";
+  return (
+    `Inserted ${position} ${anchor} in ${file}: new lines ${res.start}-${res.end} ` +
+    `(${res.end - res.start + 1} line(s)). ${snapNote}; ${parseNote}.`
+  );
+}
 
 /**
  * The batched write path. Resolves every target BEFORE touching disk, refuses

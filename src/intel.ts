@@ -83,7 +83,14 @@ export function enclosingSymbol(entry: FileEntry, line: number): { name: string;
 export function fileSkeleton(source: string, entry: FileEntry): string {
   const lines = source.split(/\r?\n/);
   const rows: string[] = [];
+  // One row per LINE, not per symbol. Several symbols can share a declaration
+  // line — a CSS selector list indexes every class in it, so
+  // `.hub-card.hub-allow-overflow {` is two symbols — and rendering the source
+  // line once per symbol printed the identical row twice.
+  const rendered = new Set<number>();
   for (const s of entry.symbols) {
+    if (rendered.has(s.line)) continue;
+    rendered.add(s.line);
     const raw = lines[s.line - 1] ?? "";
     const indent = raw.slice(0, leadingWS(raw));
     // strip a trailing opening brace / colon, append an elision marker

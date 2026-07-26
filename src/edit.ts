@@ -25,6 +25,53 @@ export function spliceSymbol(source: string, defLine: number, newBody: string): 
   return spliceOne(source, defLine, newBody);
 }
 
+export interface InsertResult {
+  text: string; // full new file content
+  start: number; // 1-indexed first line of the inserted body
+  end: number; // 1-indexed last line of the inserted body
+  eol: "\n" | "\r\n";
+}
+
+/**
+ * Insert `body` immediately before or after the definition block anchored at
+ * `anchorLine`, without rewriting the anchor.
+ *
+ * Why this exists: replace_symbol could only overwrite a symbol that already
+ * existed, so the single most common write there is — "add a method next to
+ * the related ones" — fell straight back to re-sending surrounding code to a
+ * generic edit tool. That is precisely the cost this module was built to
+ * avoid, and the flagship write tool simply had no answer for it.
+ *
+ * The anchor's own span comes from the same extractBlock the read tools use,
+ * so "after candidateInstruments" means after its closing brace, not after its
+ * signature line.
+ *
+ * `body` is inserted VERBATIM — no re-indentation, no blank lines added. The
+ * caller controls formatting by indenting the body and including a leading or
+ * trailing newline if it wants separation. Silently reformatting someone's
+ * code to guess at house style is exactly the kind of surprise this codebase
+ * refuses elsewhere.
+ */
+export function insertAtSymbol(
+  source: string,
+  anchorLine: number,
+  body: string,
+  position: "before" | "after"
+): InsertResult {
+  const eol: "\n" | "\r\n" = /\r\n/.test(source) ? "\r\n" : "\n";
+  const lines = source.split(/\r?\n/);
+  if (anchorLine < 1 || anchorLine > lines.length)
+    throw new Error(`anchor line ${anchorLine} is out of range for this file (${lines.length} line(s)) — re-run index_repo`);
+
+  // Throws on an unterminated block, same as the replace path: if we cannot
+  // tell where the anchor ends, we cannot tell where "after" is.
+  const block = extractBlock(lines, anchorLine);
+  const at = position === "after" ? block.end : block.start - 1; // 0-based insertion index
+  const newLines = body.split(/\r?\n/);
+  const merged = [...lines.slice(0, at), ...newLines, ...lines.slice(at)];
+  return { text: merged.join(eol), start: at + 1, end: at + newLines.length, eol };
+}
+
 function spliceOne(source: string, defLine: number, newBody: string): SpliceResult {
   const eol: "\n" | "\r\n" = /\r\n/.test(source) ? "\r\n" : "\n";
   const lines = source.split(/\r?\n/);
