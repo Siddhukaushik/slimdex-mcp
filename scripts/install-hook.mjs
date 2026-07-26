@@ -13,7 +13,15 @@
 //   npm run install-hook              # <repo>/.claude/settings.json      (SHARED - committed)
 //   npm run install-hook -- --local   # <repo>/.claude/settings.local.json (yours - gitignored)
 //   npm run install-hook -- --global  # ~/.claude/settings.json            (yours - every repo)
+//   npm run install-hook -- --copilot        # <repo>/.github/hooks/slimdex.json (SHARED - committed)
+//   npm run install-hook -- --copilot-global # ~/.copilot/hooks/slimdex.json     (yours - every repo)
 //   npm run install-hook -- --uninstall
+//
+// The Copilot targets exist because a repo that only ever uses VS Code chat has
+// no .claude directory at all, and telling those users to create one to
+// configure Copilot is backwards. VS Code reads both — its own paths and
+// Claude's — so the choice is about which file the repo actually keeps, not
+// which editor is in front of you.
 //
 // Pick --local or --global for a SHARED repo. The hook command contains an
 // absolute path to this clone, so committing it to <repo>/.claude/settings.json
@@ -25,7 +33,7 @@
 // A global install is safe: the hook exits silently in any repo with no
 // .slimdex index, so it can never point an agent at a server that isn't there.
 
-import { promises as fs } from "node:fs";
+import { promises as fs, existsSync } from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
@@ -33,6 +41,8 @@ import { fileURLToPath } from "node:url";
 const args = new Set(process.argv.slice(2));
 const GLOBAL = args.has("--global");
 const LOCAL = args.has("--local");
+const COPILOT = args.has("--copilot");
+const COPILOT_GLOBAL = args.has("--copilot-global");
 const UNINSTALL = args.has("--uninstall");
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -42,14 +52,36 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 // then receives `C:\\Users\\…` — which is not the path anyone meant.
 const hookScript = path.join(here, "slimdex-edit-hook.mjs").split(path.sep).join("/");
 const COMMAND = `node "${hookScript}"`;
-const MATCHER = "Edit|MultiEdit|Write|Read";
+// Both clients' vocabularies. Claude Code sends Edit/MultiEdit/Write/Read; VS
+// Code Copilot — which reads this same .claude/settings.json — sends
+// editFiles/createFile/readFile, sometimes namespaced (edit/editFiles). Missing
+// half the names would install a hook that is silently inert in one of the two
+// editors, which is the failure this whole mechanism keeps rediscovering.
+// The hook re-checks the name itself, so an over-broad matcher costs nothing.
+const MATCHER =
+  "Edit|MultiEdit|Write|Read|.*editFiles|.*createFile|.*readFile|replace_string_in_file|insert_edit_into_file|apply_patch";
 
-const settingsPath = GLOBAL
-  ? path.join(os.homedir(), ".claude", "settings.json")
-  : path.join(process.cwd(), ".claude", LOCAL ? "settings.local.json" : "settings.json");
+// Copilot keeps hooks in its own dedicated files rather than a shared settings
+// blob: .github/hooks/*.json in the workspace, ~/.copilot/hooks/*.json for the
+// user. The top-level shape is the same { hooks: { PreToolUse: [...] } }, so
+// everything below — merge, detect, uninstall — works unchanged.
+const settingsPath = COPILOT_GLOBAL
+  ? path.join(os.homedir(), ".copilot", "hooks", "slimdex.json")
+  : COPILOT
+    ? path.join(process.cwd(), ".github", "hooks", "slimdex.json")
+    : GLOBAL
+      ? path.join(os.homedir(), ".claude", "settings.json")
+      : path.join(process.cwd(), ".claude", LOCAL ? "settings.local.json" : "settings.json");
 
-/** True when we are about to write a machine-specific path into a COMMITTED file. */
-const sharedFile = !GLOBAL && !LOCAL;
+/** True when we are about to write into a file the repo COMMITS. */
+const sharedFile = !GLOBAL && !LOCAL && !COPILOT_GLOBAL;
+
+// A committed config with an absolute path to one person's clone is useless to
+// everyone else. When slimdex is a dependency of the target repo, there is a
+// path that works on every machine, so prefer it over the absolute one.
+const depScript = path.join("node_modules", "slimdex-mcp", "scripts", "slimdex-edit-hook.mjs");
+const portable = sharedFile && existsSync(path.join(process.cwd(), depScript));
+const command = portable ? `node "${depScript.split(path.sep).join("/")}"` : COMMAND;
 
 async function readSettings() {
   try {
@@ -62,9 +94,9 @@ async function readSettings() {
   }
 }
 
-/** Does this entry already point at our hook script? */
-const isOurs = (entry) =>
-  (entry?.hooks ?? []).some((h) => typeof h.command === "string" && h.command.includes("slimdex-edit-hook"));
+/** Does this entry already point at our hook script? Handles both nestings. */
+const mentionsUs = (c) => typeof c === "string" && c.includes("slimdex-edit-hook");
+const isOurs = (entry) => mentionsUs(entry?.command) || (entry?.hooks ?? []).some((h) => mentionsUs(h?.command));
 
 const settings = await readSettings();
 settings.hooks ??= {};
@@ -85,7 +117,19 @@ if (UNINSTALL) {
   process.exit(0);
 }
 
-const entry = { matcher: MATCHER, hooks: [{ type: "command", command: COMMAND }] };
+// VS Code ignores `matcher` entirely — every registered hook runs on every tool
+// invocation — so writing one into a Copilot file would only imply a filtering
+// guarantee that does not exist. The hook checks the tool name itself either
+// way; on Copilot that check is the ONLY thing narrowing it.
+//
+// The two clients also nest differently. Claude Code groups commands under a
+// matcher: { matcher, hooks: [ {type, command} ] }. Copilot's native files list
+// the command objects directly: [ {type, command} ]. Writing Claude's shape into
+// a Copilot file produces an entry with no `command` at the level Copilot reads,
+// which parses fine and runs nothing — a silent no-op of exactly the kind this
+// hook keeps being bitten by.
+const entry =
+  COPILOT || COPILOT_GLOBAL ? { type: "command", command } : { matcher: MATCHER, hooks: [{ type: "command", command }] };
 
 if (existing >= 0) {
   pre[existing] = entry; // refresh the path in case the repo moved
@@ -99,26 +143,34 @@ await fs.mkdir(path.dirname(settingsPath), { recursive: true });
 await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf8");
 
 console.log(`
-  matcher : ${MATCHER}
-  command : ${COMMAND}
-  mode    : warn (advisory; the call still proceeds)
+  matcher : ${COPILOT || COPILOT_GLOBAL ? "(none — VS Code ignores matcher; the hook filters by tool name itself)" : MATCHER}
+  command : ${command}
+  mode    : nudge (the model sees it; the call still proceeds)
 
 It speaks up only where slimdex actually wins — an Edit re-sending 25+ lines of
-existing code, or a whole-file Read of an indexed file over 12KB — and stays
-silent everywhere else, including repos with no .slimdex index.
+code that an indexed definition actually covers, or a whole-file Read of an
+indexed file over 12KB — and stays silent everywhere else, including repos with
+no .slimdex index, and big edits with no symbol to name.
 
-Set SLIMDEX_HOOK_MODE=block once you have watched it for a session and agree
-with what it flagged. Undo any time with: npm run install-hook -- --uninstall`);
+SLIMDEX_HOOK_MODE=warn reaches YOU instead of the model (audit without changing
+behaviour); =block cancels the call outright. Undo any time with:
+  npm run install-hook -- --uninstall`);
 
-if (sharedFile) {
+if (sharedFile && !portable) {
   console.log(`
-⚠ ${path.basename(settingsPath)} is the SHARED, COMMITTED settings file, and the command above
+⚠ ${path.relative(process.cwd(), settingsPath) || path.basename(settingsPath)} is COMMITTED, and the command above
   contains an absolute path to your clone. On a teammate's machine that path
   does not exist, so committing this hands them a hook that cannot run.
 
   On a repo you share, re-run with one of:
-    npm run install-hook -- --local    (same repo, .claude/settings.local.json, gitignored)
-    npm run install-hook -- --global   (~/.claude/settings.json, all your repos)
+    npm run install-hook -- --local           (.claude/settings.local.json, gitignored)
+    npm run install-hook -- --global          (~/.claude/settings.json, all your repos)
+    npm run install-hook -- --copilot-global  (~/.copilot/hooks, all your repos, VS Code)
 
-  Global is safe: the hook exits silently in any repo with no .slimdex index.`);
+  Either global is safe: the hook exits silently in any repo with no .slimdex
+  index, so it can never point an agent at a server that isn't connected.`);
+} else if (portable) {
+  console.log(`
+  This repo has slimdex in node_modules, so the command above is a RELATIVE path
+  and works on a teammate's machine too — safe to commit.`);
 }

@@ -11,9 +11,10 @@ tools, and cannot wrap or replace a client's built-in `Read`/`Edit`/`Write`.
 There is no capability negotiation where a server registers as the
 implementation of editing. The routing decision belongs to the model.
 
-A `PreToolUse` hook is the only place the deciding signal exists — **how much
-old code you are about to re-send**. That is invisible when the instructions are
-written and obvious at call time.
+A `PreToolUse` hook is the only place the deciding signals exist — **how much
+old code you are about to re-send**, and **whether a definition actually covers
+it**. Both are invisible when the instructions are written and obvious at call
+time.
 
 > Claude Code only. Cursor, Windsurf and Claude Desktop have no equivalent, so
 > this is one client's integration, not a universal fix.
@@ -56,15 +57,49 @@ letting you find out from a colleague.
 
 ### VS Code
 
-Claude Code's VS Code extension reads the same files as the terminal, so there
-is nothing extension-specific to configure. Hooks are read at session start —
-an already-open session won't pick up a change.
+**Claude Code's VS Code extension** reads the same files as the terminal, so
+there is nothing extension-specific to configure. Hooks are read at session
+start — an already-open session won't pick up a change.
 
-Other MCP clients in VS Code (Cline, Continue, Copilot) do not have this hook
-mechanism. The closest repo-level substitute for Copilot is the shipped
-[Copilot instructions](../.github/copilot-instructions.md) file: it is
-advisory, not enforced, but it puts the same narrow-retrieval discipline into
-the model's prompt every turn.
+**GitHub Copilot agent mode** now runs hooks too, including `PreToolUse`, and it
+reads `.claude/settings.json` and `~/.claude/settings.json` directly (alongside
+its own `.github/hooks/*.json`). So a single `--global` install covers both
+editors. Two things do *not* carry over, and the hook handles both:
+
+- **Tool names.** Copilot's built-ins are `editFiles`, `createFile`, `readFile`,
+  sometimes namespaced as `edit/editFiles`. The installed matcher covers both
+  vocabularies and the hook re-checks the name itself, so an over-broad matcher
+  costs nothing.
+- **Input keys.** Copilot uses `filePath`/`oldString` where Claude Code uses
+  `file_path`/`old_string`. The hook reads either.
+
+One caveat worth knowing: `additionalContext` — the field that lets `nudge`
+reach the model without cancelling — is verified on Claude Code but is **not
+documented for `PreToolUse` on Copilot**. So `nudge` also emits `systemMessage`,
+which both clients document and which reaches *you*. Worst case on Copilot, the
+advice degrades to a human seeing it rather than vanishing. If you want a
+guarantee the model is told, use `block` there: exit 2 and stderr-to-model are
+documented on both.
+
+### Don't guess the vocabulary — measure it
+
+Set `SLIMDEX_HOOK_TRACE=1` and run one session. Every hook invocation is
+journalled with the client's real `tool_name` and the actual keys of its
+`tool_input`:
+
+```json
+{"t":"…","trace":true,"tool":"edit/editFiles","inputKeys":["filePath","oldString"]}
+```
+
+That turns "which names does this client send" from a documentation question
+into a two-minute measurement. Worth doing before trusting the hook in any new
+client — the CRLF bug in this same file passed every fixture and was only
+caught by running it against a real repo.
+
+Other MCP clients (Cline, Continue) still have no hook mechanism. The closest
+repo-level substitute is the shipped
+[Copilot instructions](../.github/copilot-instructions.md): advisory, not
+enforced, but it puts the same narrow-retrieval discipline in the prompt.
 
 ### Why `npm install` doesn't just do it
 
@@ -83,29 +118,71 @@ achievable for hooks by any route. One explicit command is as close as it gets.
 
 ## Modes
 
-| `SLIMDEX_HOOK_MODE` | Behaviour |
-|---|---|
-| `warn` (default) | Prints to stdout, exits 0. The call proceeds. Use this first, to watch what *would* have been redirected. |
-| `block` | Writes to stderr and exits 2, which cancels the call and feeds the message back to the model. This is the mode that changes behaviour. |
+| `SLIMDEX_HOOK_MODE` | Who hears it | Call proceeds? |
+|---|---|---|
+| `nudge` (default) | **the model** — `additionalContext`, placed next to the tool result | yes |
+| `warn` | **the user** — `systemMessage` | yes |
+| `block` | **the model** — stderr, exit 2 | no, cancelled |
 
-Start on `warn`. Run a few real sessions, then compare with
-`stats checkpoint:true` at the start and `stats session:true` at the end — if
-the advice was right, total chars go down and the `replace_symbol` row goes up.
-Promote to `block` only once the numbers agree.
+`nudge` is the default because it is the only mode that both informs and costs
+nothing when the advice is wrong: the agent reads it, and can still go ahead
+with the `Edit` if `replace_symbol` genuinely does not fit.
+
+### The bug this table used to hide
+
+Earlier versions defaulted to printing on stdout with exit 0, and this page
+claimed that was "visible in the transcript." **It is not.** For `PreToolUse`,
+Claude Code writes stdout to the *debug log* — not the transcript, and not the
+model's context. Only `UserPromptSubmit`, `UserPromptExpansion` and
+`SessionStart` add stdout as context the model can see.
+
+So the hook was installed, fired on exactly the right edits, and reached
+nobody. An audit later found a session with three whole-symbol rewrites sent
+through `Edit`, every one of them correctly detected and silently discarded.
+If you installed this before that fix, you were running the null mode.
+
+Use `warn` when you deliberately want to audit without changing agent behaviour
+— it reaches you and not the model. Then compare `stats checkpoint:true` at the
+start of a task with `stats session:true` at the end: with the hook installed,
+the write block reports a **measured** count of whole-symbol edits rather than
+an inference. Promote to `block` only if `nudge` is being read and ignored.
 
 ## What it fires on
 
 Two triggers, both chosen because they are the cases where slimdex genuinely
 wins:
 
-- **`Edit`/`MultiEdit` whose `old_string` spans ≥25 lines** — you are re-sending
-  a whole symbol purely to locate it. `replace_symbol` addresses it by name, so
-  you emit only the new body: roughly half the output.
+- **`Edit`/`MultiEdit` whose `old_string` spans ≥25 lines *and* is covered by an
+  indexed definition** — you are re-sending a whole symbol purely to locate it.
+  `replace_symbol` addresses it by name, so you emit only the new body: roughly
+  half the output.
 - **A whole-file `Read` of an indexed file ≥12 KB** — `get_file_skeleton` then
   narrow reads costs a fraction.
 
-Both thresholds are env-tunable (`SLIMDEX_HOOK_EDIT_LINES`,
-`SLIMDEX_HOOK_READ_BYTES`).
+The thresholds are env-tunable (`SLIMDEX_HOOK_EDIT_LINES`,
+`SLIMDEX_HOOK_READ_BYTES`, `SLIMDEX_HOOK_DEF_WINDOW`).
+
+### Why the size threshold is not enough on its own
+
+A 40-line edit to an HTML fragment, a CSS block with no indexed selector, or
+the interior of an IIFE trips the line count but has **no symbol to address**.
+Advice you cannot follow is worse than silence — it is how a signal gets tuned
+out. So the hook looks the span up in `.slimdex/index.json` and stays quiet
+unless it can *name* the definition being rewritten, which it then puts in the
+message. If the name is defined in more than one place (routine for CSS
+selectors), it advises `path:`+`line:` instead, because `replace_symbol` refuses
+an ambiguous name rather than guessing.
+
+## What it records
+
+Every verdict is appended to `.slimdex/hook-events.jsonl` — both the fires and
+the deliberate silences. This is what lets `stats` report *"4 edits re-sent a
+whole symbol's body"* as a measurement instead of inferring it from how many
+files changed. The server cannot see a built-in `Edit` at all; the hook can, so
+it is the only honest source for that number. The log is capped and self-trims.
+
+Without the hook installed, the write block says plainly that the expensive
+case is **not observable from here**, rather than guessing.
 
 ## It stays quiet, on purpose
 

@@ -278,10 +278,42 @@ describe("the report", () => {
     expect(formatWrite(base)).toBe("");
   });
 
-  it("warns when the edits bypassed replace_symbol", () => {
+  it("does not assert what it cannot observe when the hook is absent", () => {
+    // The old wording ("Most edits bypassed replace_symbol… IF any were
+    // whole-function rewrites") fired on any session touching more than one
+    // file, whether or not a single edit was the expensive shape. A conditional
+    // that is right half the time gets discounted — and was, in an audit, then
+    // repeated to a user as fact. Without the hook, say what is unknown.
     const out = formatWrite({ ...base, externalFiles: 12, slimdexSymbols: 0, blindEdits: 1 });
-    expect(out).toContain("Most edits bypassed replace_symbol");
+    expect(out).toContain("12 file(s) changed outside slimdex");
+    expect(out).toContain("not observable from here");
+    expect(out).not.toContain("Most edits bypassed replace_symbol");
+  });
+
+  it("states a measured count when the hook journalled one", () => {
+    const out = formatWrite({ ...base, externalFiles: 12, slimdexSymbols: 0 }, undefined, {
+      wholeSymbolEdits: 4,
+      correctGenericEdits: 2,
+      wholeFileReads: 0,
+      symbols: ["paintBoardRef", "syncInspector"],
+    });
+    expect(out).toContain("4 edit(s) re-sent a whole symbol's body");
+    expect(out).toContain("paintBoardRef");
     expect(out).toContain("4-5x input");
+  });
+
+  it("credits a session whose big edits genuinely had no symbol to name", () => {
+    // The counterpart that makes the warning trustworthy: when the hook saw big
+    // edits and confirmed none were whole-symbol rewrites, Edit was correct and
+    // the report must say so rather than stay ominously quiet.
+    const out = formatWrite({ ...base, externalFiles: 5, slimdexSymbols: 0 }, undefined, {
+      wholeSymbolEdits: 0,
+      correctGenericEdits: 3,
+      wholeFileReads: 0,
+      symbols: [],
+    });
+    expect(out).toContain("3 large edit(s) had no symbol covering them");
+    expect(out).not.toContain("⚠");
   });
 
   it("does not nag a session that used the by-name path", () => {
