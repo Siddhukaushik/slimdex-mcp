@@ -68,6 +68,21 @@ async function safeResolve(p: string): Promise<string> {
   return abs;
 }
 
+/**
+ * Print at most `max` candidate sites, then say how many were withheld.
+ *
+ * An "ambiguous name" refusal is meant to cost less than the work it prevents.
+ * These listings were unbounded, so on a large repo the refusal was the most
+ * expensive thing in the session: on Elasticsearch (31k files, 316k symbols) one
+ * get_symbol_context answered with 96,835 characters of candidates — a wall the
+ * caller cannot act on, re-paid on every later turn. Ten sites are enough to
+ * pick from or to prove the name is hopeless; the exact total still gets stated.
+ */
+function candidateList(sites: string[], max = 10): string {
+  const head = sites.slice(0, max).join("\n");
+  return sites.length > max ? `${head}\n  … ${sites.length - max} more (scope with pathPrefix)` : head;
+}
+
 async function changedSinceIndex(file: string, entry: CodeIndex["files"][string]): Promise<boolean> {
   if (await isStale(ROOT, file, entry.mtimeMs)) return true;
   try {
@@ -206,7 +221,7 @@ tool(
       `Indexed ${r.totalFiles} files under ${ROOT}\n` +
       `  parsed: ${r.parsed}  reused(cache): ${r.reused}  removed: ${r.removed}` +
       (r.skipped ? `  skipped(too large): ${r.skipped}` : "") +
-      (r.minified ? `  skipped(minified build output): ${r.minified}` : "") +
+      (r.generated ? `  skipped(generated/minified): ${r.generated}` : "") +
       (r.truncated ? `  truncated(symbol cap): ${r.truncated}` : "") +
       `\n  symbols indexed: ${symbols}  parser: ${r.parser}\n` +
       `  config: ${r.config}${warn}\n` +
@@ -356,18 +371,44 @@ tool(
   "find_definition",
   {
     title: "Find where a symbol is defined",
-    description: "Look up a symbol name in the index; return definition site(s) as path:line:col + kind. Heuristic.",
-    inputSchema: { name: z.string(), kind: z.string().optional() },
+    description:
+      "Look up a symbol name in the index; return definition site(s) as path:line:col + kind. Heuristic. " +
+      "Paged: the total is always exact, `limit`/`offset` control how many are printed, `pathPrefix` scopes them.",
+    inputSchema: {
+      name: z.string(),
+      kind: z.string().optional(),
+      pathPrefix: z.string().optional().describe("Only definitions under this path."),
+      limit: z.number().int().min(1).max(500).optional().describe("Max sites to print (default 50)."),
+      offset: z.number().int().min(0).optional(),
+    },
   },
-  async ({ name, kind }) => {
+  async ({ name, kind, pathPrefix, limit, offset }) => {
     const index = await loadIndex(ROOT);
-    const hits: string[] = [];
-    for (const [file, entry] of Object.entries(index.files))
+    const all: string[] = [];
+    for (const [file, entry] of Object.entries(index.files)) {
+      if (pathPrefix && !underPrefix(file, pathPrefix)) continue;
       for (const s of entry.symbols)
-        if (s.name === name && (!kind || s.kind === kind)) hits.push(`${file}:${s.line}:${s.col}  ${s.kind} ${s.name}`);
-    return hits.length
-      ? `${t(`${hits.length} definition candidate(s) for "${name}":`, `${hits.length} def(s) "${name}":`)}\n${hits.join("\n")}`
-      : `No definition indexed for "${name}". Try search_symbols for a fuzzy match.`;
+        if (s.name === name && (!kind || s.kind === kind)) all.push(`${file}:${s.line}:${s.col}  ${s.kind} ${s.name}`);
+    }
+    if (!all.length) return `No definition indexed for "${name}". Try search_symbols for a fuzzy match.`;
+    // This tool had NO limit. Every sibling (search_code, find_references,
+    // search_symbols) pages; find_definition returned every hit because "a
+    // definition" sounds singular. On Elasticsearch — 31k files, 316k symbols —
+    // one lookup answered with 103,102 characters, which then re-costs on every
+    // later turn of that session. A cap could not be added by feel either: the
+    // failure only exists at a scale where nobody was testing.
+    const lim = limit ?? 50;
+    const start = offset ?? 0;
+    const page = all.slice(start, start + lim);
+    const shown = start + page.length;
+    const more =
+      shown < all.length
+        ? `\n… ${all.length - shown} more. Narrow with pathPrefix${kind ? "" : ' or kind:"class"'}, or page with offset:${shown}.`
+        : "";
+    return (
+      `${t(`${all.length} definition candidate(s) for "${name}"`, `${all.length} def(s) "${name}"`)}` +
+      `${all.length > page.length ? `, showing ${start + 1}-${shown}` : ""}:\n${page.join("\n")}${more}`
+    );
   }
 );
 
@@ -606,7 +647,11 @@ tool(
     },
   },
   async ({ name, names, path: p, line, pathPrefix, before, after, maxLines }) => {
-    const index = await loadIndex(ROOT);
+    let index = await loadIndex(ROOT);
+    // One self-heal per call, shared across a names:[…] batch: a file that is
+    // STILL stale after a fresh parse is being written concurrently, and
+    // re-parsing in a loop against a moving target returns torn code.
+    let staleRetried = false;
 
     const one = async (sym: string | undefined, fp: string | undefined, ln: number | undefined): Promise<string> => {
       let file: string, defLine: number, kind = "symbol";
@@ -625,20 +670,45 @@ tool(
           if (scoped.length === 0)
             return (
               `"${sym}" is indexed, but not under "${pathPrefix}". Found in:\n` +
-              found.map((d) => `  ${d.file}:${d.line}  ${d.kind}`).join("\n")
+              candidateList(found.map((d) => `  ${d.file}:${d.line}  ${d.kind}`))
             );
           found = scoped;
         }
         if (found.length > 1)
           return (
             `"${sym}" has ${found.length} definitions — narrow with pathPrefix, or pass path + line to pick one:\n` +
-            found.map((d) => `  ${d.file}:${d.line}  ${d.kind}`).join("\n")
+            candidateList(found.map((d) => `  ${d.file}:${d.line}  ${d.kind}`))
           );
         file = found[0].file;
         defLine = found[0].line;
         kind = found[0].kind;
       } else {
         return "Provide either name, names, or path + line.";
+      }
+      // Heal a stale file before reading from it, not after.
+      //
+      // Warning and then returning the wrong lines anyway is the worst of both:
+      // reported from a session that edited a file all turn, asked for a symbol
+      // in it, and got a body from an unrelated text block plus a ⚠ — then fell
+      // back to grep and concluded that symbol lookups are untrustworthy once
+      // you start editing. That conclusion was correct about the behaviour and
+      // wrong about the cost of fixing it: re-parsing one file is ~10ms and one
+      // file (measured on this repo: parsed 1, reused 70).
+      //
+      // Only a NAME is re-resolved. An explicit path+line is the caller's own
+      // coordinate, computed against state that has since moved, so it keeps the
+      // warning and is left alone — the same rule replace_symbol uses.
+      if (sym && !fp && !staleRetried && (await changedSinceIndex(file, index.files[file]))) {
+        staleRetried = true;
+        const stale = index.files[file];
+        // Staleness is detected by content hash, which catches an edit that left
+        // mtime alone; the incremental build skips on mtime, so without this the
+        // re-parse would decline to look at the one file we know is wrong.
+        if (stale) stale.mtimeMs = -1;
+        invalidateFileCache(path.join(ROOT, file));
+        await buildOrRefresh(ROOT, false);
+        index = await loadIndex(ROOT);
+        return one(sym, fp, ln);
       }
       // The next declaration in the same file bounds the trailing padding, so a
       // "just this symbol" response can't spill into the following function.
@@ -734,7 +804,7 @@ tool(
         if (found.length > 1)
           return (
             `"${spec.name}" has ${found.length} definitions — pass path + line to pick one, I won't guess which to overwrite:\n` +
-            found.map((d) => `  ${d.file}:${d.line}`).join("\n")
+            candidateList(found.map((d) => `  ${d.file}:${d.line}`))
           );
         const target = found[0];
         if (await changedSinceIndex(target.file, index.files[target.file])) {

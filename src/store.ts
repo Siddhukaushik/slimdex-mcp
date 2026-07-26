@@ -32,7 +32,19 @@ export interface FileEntry {
 // index was built before that check existed, and its entries survive on mtime
 // alone — so the bundles it already holds would never be re-examined. Bumping
 // forces one full reparse, after which they are gone.
-export const INDEX_VERSION = 4;
+//
+// 5: the parser now finds symbols it used to miss — Java/C# records, Apex
+// methods whose annotation shares the signature's line (`@isTest static void
+// t() {}`), and any single-line body (`int main(...) { return 0; }`, `void
+// Engine::stop() {}`) — plus generated documentation is excluded and Salesforce
+// `-meta.xml` sidecars are included.
+//
+// Every one of those changes WHAT a correct index contains, and none of them
+// would have reached an existing user: entries are reused on mtime, so a file
+// nobody edits keeps whatever the old rules extracted from it. Without this
+// bump, `record Decision` stays missing on exactly the repos that reported it.
+// The cost is one full reparse — 24s on a 39,000-file checkout, once.
+export const INDEX_VERSION = 5;
 
 export interface CodeIndex {
   version: number;

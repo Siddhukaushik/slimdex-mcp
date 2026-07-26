@@ -41,6 +41,53 @@ describe("Java", () => {
     // `static <T> Optional<T> firstOf(…)` — the <T> before the return type.
     expectAll(src, ["firstOf"]);
   });
+
+  // Records were absent from the rules entirely. A one-line record indexed as a
+  // METHOD (its component list looks exactly like a parameter list), and a record
+  // whose components wrap — the usual shape past two or three of them — indexed
+  // as nothing at all, because the method rule needs `(…)` closed on one line.
+  // Reported as get_symbol_context name:"Decision" answering "No definition
+  // indexed" for a record sitting in plain sight.
+  describe("records", () => {
+    const rec = [
+      "public class TradingBrain {",
+      "    public record Decision(String action, double price) {}",
+      "    private static record Inner(int x) {}",
+      "    public record Wrapped(",
+      "        String action,",
+      "        double price",
+      "    ) {}",
+      "    static class Helper { }",
+      "    public double getPrice(String sym) { return 1.0; }",
+      "}",
+      "public record TopLevel(String a) {}",
+      "record Bare(int x) {}",
+    ].join("\n");
+
+    it("finds records at every nesting depth, including multi-line ones", () => {
+      expectAll(rec, ["Decision", "Inner", "Wrapped", "TopLevel", "Bare"]);
+    });
+
+    it("classifies them as types, not methods", () => {
+      const kinds = new Map(extractSymbols(rec).map((s) => [s.name, s.kind]));
+      for (const n of ["Decision", "Inner", "Wrapped", "TopLevel", "Bare"]) {
+        expect(kinds.get(n), `${n} should be a type`).toBe("type");
+      }
+      // The rule sits above the method rules, so it must not have eaten methods.
+      expect(kinds.get("getPrice")).toBe("method");
+      expect(kinds.get("Helper")).toBe("class");
+    });
+  });
+});
+
+describe("the record rule does not leak into other languages", () => {
+  it("leaves an identifier named `record` alone in JS/TS", () => {
+    // `record` is not a keyword outside Java/C#, so requiring `(` or `{` after
+    // the NAME is what keeps ordinary variables and calls out of the index.
+    const js = ["const record = { a: 1 };", "record(someArg);", "let recorder = 2;"].join("\n");
+    expect(names(js)).not.toContain("someArg");
+    expect(extractSymbols(js).filter((s) => s.kind === "type")).toHaveLength(0);
+  });
 });
 
 describe("C#", () => {
