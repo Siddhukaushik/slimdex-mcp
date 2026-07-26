@@ -21,9 +21,10 @@
     "slimdex-mcp": "dist/index.js"
   },
   "files": [
-    "dist",
+    "LICENSE",
     "README.md",
-    "LICENSE"
+    "dist",
+    "scripts/"
   ],
   "engines": {
     "node": ">=20"
@@ -37,7 +38,8 @@
     "prepublishOnly": "npm run build && npm test",
     "audit": "node scripts/audit-coverage.mjs",
     "pretest": "npm run build",
-    "audit:corpus": "npm run build && node scripts/corpus-audit.mjs"
+    "audit:corpus": "npm run build && node scripts/corpus-audit.mjs",
+    "install-hook": "node scripts/install-hook.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
