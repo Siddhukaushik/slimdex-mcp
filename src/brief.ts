@@ -59,6 +59,36 @@ export interface BriefInput {
   root: string;
 }
 
+/** Extensions whose real behaviour is decided by the rendered page, not the source. */
+const VISUAL_EXTS = new Set([".css", ".scss", ".less", ".html", ".htm", ".jsx", ".tsx", ".vue", ".svelte"]);
+
+/**
+ * State up front what this index CANNOT answer.
+ *
+ * From a real session: an agent spent roughly six calls hunting an inherited
+ * `white-space: nowrap` through global stylesheets before giving up and
+ * measuring the page in a browser — which took one call. No index can tell you
+ * whether text wraps, which element paints on top, or what happened at
+ * runtime; those live in the rendered page and in the logs. A tool that says so
+ * in its opener is worth more than another search mode, because the failure it
+ * prevents is silent: searching *works*, it just cannot find something that was
+ * never in the code.
+ *
+ * Kept to one line, and sharpened only when the repo is actually markup-heavy,
+ * because the opener is re-read in every later turn.
+ */
+export function blindSpots(byExt: Map<string, number>, fileCount: number): string {
+  let visual = 0;
+  for (const [ext, n] of byExt) if (VISUAL_EXTS.has(ext)) visual += n;
+  const visualHeavy = fileCount > 0 && visual / fileCount >= 0.2;
+  return visualHeavy
+    ? `Blind spots: this index sees code, not the rendered page — layout, overlap and CSS-cascade questions ` +
+        `(${visual}/${fileCount} files are markup/style) are NOT answerable here; measure them in a browser first. ` +
+        `Runtime behaviour needs the logs.`
+    : `Blind spots: this index sees code, not behaviour — runtime questions need the logs, and anything about ` +
+        `layout or rendering needs a browser.`;
+}
+
 /** Compose the human-readable brief. Pure over its inputs for testability. */
 export function composeBrief({ index, facts, recap, root }: BriefInput): string {
   const files = Object.entries(index.files);
@@ -84,6 +114,7 @@ export function composeBrief({ index, facts, recap, root }: BriefInput): string 
   const lines: string[] = [];
   lines.push(`Onboarding brief for ${root}`);
   lines.push(`  Repo: ${fileCount} indexed file(s), ${symCount} symbol(s). Languages: ${langs || "n/a"}.`);
+  lines.push(`  ${blindSpots(byExt, fileCount)}`);
   lines.push("");
   lines.push(recap.trim());
   lines.push("");
