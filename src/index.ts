@@ -29,6 +29,7 @@ import {
   loadSessionStats,
   checkpointStats,
   formatStats,
+  loadBypass,
   record,
   resetStats,
   flushStatsSync,
@@ -107,6 +108,41 @@ async function safeResolve(p: string): Promise<string> {
 function candidateList(sites: string[], max = 10): string {
   const head = sites.slice(0, max).join("\n");
   return sites.length > max ? `${head}\n  … ${sites.length - max} more (scope with pathPrefix)` : head;
+}
+
+/**
+ * Definitions that existed inside the replaced span and do not exist inside the
+ * span that replaced it.
+ *
+ * This is the one safety property a generic edit tool has that replace_symbol
+ * did not. Handing over `old_string` is proof you know what you are
+ * overwriting; addressing a symbol by name means the old body is never in front
+ * of you, so a `body` that quietly omits a nested helper writes a silent
+ * deletion — the single failure mode that costs more than the output tokens
+ * this tool saves. Reporting it costs one line and removes the last honest
+ * reason to prefer re-sending the old code.
+ *
+ * A rename lands here too (old name gone, new name present). That is worth
+ * saying rather than suppressing, so the wording asks rather than accuses.
+ */
+function droppedSymbols(
+  before: readonly { name: string; line: number }[],
+  after: readonly { name: string; line: number }[],
+  old: { start: number; end: number },
+  fresh: { start: number; end: number }
+): string[] {
+  const lost = new Set<string>();
+  for (const s of before) if (s.line >= old.start && s.line <= old.end) lost.add(s.name);
+  for (const s of after) if (s.line >= fresh.start && s.line <= fresh.end) lost.delete(s.name);
+  return [...lost];
+}
+
+/** `; also …` clause for a replace report, or "" when nothing was lost. */
+function droppedNote(dropped: string[], max = 8): string {
+  if (dropped.length === 0) return "";
+  const head = dropped.slice(0, max).join(", ");
+  const more = dropped.length > max ? `, … ${dropped.length - max} more` : "";
+  return `; ⚠ defined in the old range but not the new one: ${head}${more} (renamed, or dropped from the body?)`;
 }
 
 async function changedSinceIndex(file: string, entry: CodeIndex["files"][string]): Promise<boolean> {
@@ -360,13 +396,43 @@ tool(
         staleNote = " (note: index changed since the cursor was issued; results may have shifted)";
     }
 
-    const { matches, total, exact, timedOut } = await searchFiles(ROOT, files, pattern, {
-      regex,
-      ignoreCase,
-      highlight,
-      maxMatches: lim,
-      offset: start,
-    });
+    const opts = { regex, ignoreCase, highlight, maxMatches: lim, offset: start };
+    let { matches, total, exact, timedOut } = await searchFiles(ROOT, files, pattern, opts);
+
+    // A zero here is the one result that gets believed and acted on, and it is
+    // the one most easily wrong: the file list comes from the INDEX, so a file
+    // created or renamed since the last index_repo is never scanned at all. The
+    // caller then reads "no matches" as absence, goes looking elsewhere, and
+    // pays for the detour — observed in a real session.
+    //
+    // Refreshing is incremental (mtime-gated), so the cost of being wrong about
+    // absence is far higher than the cost of this check. Only on a true zero,
+    // never on a paged call, and a failure leaves the original answer standing.
+    let refreshNote = "";
+    if (total === 0 && !cursor) {
+      try {
+        await buildOrRefresh(ROOT, false);
+        const re = await loadIndex(ROOT);
+        if (re.builtAt !== index.builtAt) {
+          let reFiles = Object.keys(re.files);
+          if (pathPrefix) reFiles = reFiles.filter((f) => underPrefix(f, pathPrefix));
+          const again = await searchFiles(ROOT, reFiles, pattern, opts);
+          const added = reFiles.length - files.length;
+          files = reFiles;
+          if (again.total > 0) {
+            ({ matches, total, exact, timedOut } = again);
+            refreshNote =
+              `\n⚠ The first pass found nothing because the index was stale` +
+              (added > 0 ? ` (${added} file(s) were missing from it)` : "") +
+              `; it was refreshed and re-run. These results are from the fresh index.`;
+          } else {
+            refreshNote = `\n(index refreshed and re-searched to confirm — still no matches.)`;
+          }
+        }
+      } catch {
+        /* keep the original result; a refresh failure must not lose the answer */
+      }
+    }
     // A pattern that backtracks catastrophically shows up here, not as a hang.
     const slowNote = timedOut
       ? `\n⚠ Scan stopped at the time budget; results are partial. A regex with nested quantifiers ` +
@@ -405,7 +471,10 @@ tool(
             : `note "${pattern}" is not a valid regex, so regex:true would fail to compile — literal mode (used here) is the right one for it, and the metacharacters were matched as plain text`
         );
       }
-      parts.push(`if the file is new or just changed, run index_repo`);
+      // Staleness is no longer in this list: a zero now triggers a refresh and a
+      // re-search above, so "run index_repo" would be advice for something
+      // already done — and telling a caller to redo work it just watched happen
+      // is how a hint list stops being read.
       zeroHint = `\n  Note: ${parts.join("; ")}.`;
     }
     // Many hits piled into one big file is the signature of "I am hunting for
@@ -428,7 +497,7 @@ tool(
           ` get_file_skeleton path:"${topFile}" maps it in one call.`;
       }
     }
-    return `${t(`${matches.length} of ${totalStr} match(es)`, `${matches.length}/${totalStr}`)}${staleNote}\n${formatMatches(matches)}${next}${zeroHint}${concentrationHint}${slowNote}`;
+    return `${t(`${matches.length} of ${totalStr} match(es)`, `${matches.length}/${totalStr}`)}${staleNote}\n${formatMatches(matches)}${next}${refreshNote}${zeroHint}${concentrationHint}${slowNote}`;
   }
 );
 
@@ -455,22 +524,44 @@ tool(
     // one that failed, into a message telling you to spend a second call on
     // search_symbols. Try the selector forms before declaring a miss.
     const candidates = /^[.#]/.test(name) ? [name] : [name, `.${name}`, `#${name}`];
-    let matchedAs = name;
-    let all: string[] = [];
-    for (const candidate of candidates) {
-      const hits: string[] = [];
-      for (const [file, entry] of Object.entries(index.files)) {
-        if (pathPrefix && !underPrefix(file, pathPrefix)) continue;
-        for (const s of entry.symbols)
-          if (s.name === candidate && (!kind || s.kind === kind)) hits.push(`${file}:${s.line}:${s.col}  ${s.kind} ${s.name}`);
+    const lookup = (idx: CodeIndex): { all: string[]; matchedAs: string } => {
+      for (const candidate of candidates) {
+        const hits: string[] = [];
+        for (const [file, entry] of Object.entries(idx.files)) {
+          if (pathPrefix && !underPrefix(file, pathPrefix)) continue;
+          for (const s of entry.symbols)
+            if (s.name === candidate && (!kind || s.kind === kind)) hits.push(`${file}:${s.line}:${s.col}  ${s.kind} ${s.name}`);
+        }
+        if (hits.length) return { all: hits, matchedAs: candidate };
       }
-      if (hits.length) {
-        all = hits;
-        matchedAs = candidate;
-        break;
+      return { all: [], matchedAs: name };
+    };
+
+    let { all, matchedAs } = lookup(index);
+    // "Not indexed" and "does not exist" are different claims, and this tool
+    // answers purely from the index — so a symbol defined since the last
+    // index_repo reads as absent. That zero gets believed: the caller stops
+    // looking, or re-derives something that already exists. Refresh once and
+    // ask again before reporting absence.
+    let healedNote = "";
+    if (!all.length) {
+      try {
+        await buildOrRefresh(ROOT, false);
+        const re = await loadIndex(ROOT);
+        if (re.builtAt !== index.builtAt) {
+          const retry = lookup(re);
+          if (retry.all.length) {
+            all = retry.all;
+            matchedAs = retry.matchedAs;
+            healedNote = `\n⚠ Not in the index on the first look — it was stale. Refreshed automatically; the result below is current.`;
+          }
+        }
+      } catch {
+        /* fall through to the honest miss */
       }
     }
-    if (!all.length) return `No definition indexed for "${name}". Try search_symbols for a fuzzy match.`;
+    if (!all.length)
+      return `No definition indexed for "${name}" (the index was refreshed and re-checked). Try search_symbols for a fuzzy match.`;
     // Say so when the bare name was resolved as a selector, so the caller learns
     // the indexed form rather than wondering why it worked.
     const resolvedNote = matchedAs === name ? "" : `  (matched as "${matchedAs}")`;
@@ -490,7 +581,7 @@ tool(
         : "";
     return (
       `${t(`${all.length} definition candidate(s) for "${name}"`, `${all.length} def(s) "${name}"`)}${resolvedNote}` +
-      `${all.length > page.length ? `, showing ${start + 1}-${shown}` : ""}:\n${page.join("\n")}${more}`
+      `${all.length > page.length ? `, showing ${start + 1}-${shown}` : ""}:\n${page.join("\n")}${more}${healedNote}`
     );
   }
 );
@@ -974,6 +1065,9 @@ tool(
     // Snapshot BEFORE writing — the whole safety story. If this edit is wrong,
     // the pre-edit file is under .slimdex/snapshots/<stamp>/.
     const snap = await takeSnapshot(ROOT, [file]);
+    // Captured before the write, while the index still describes the old file:
+    // this is what makes "did your body drop a nested definition" answerable.
+    const beforeSymbols = index.files[file]?.symbols ?? [];
     const res = spliceSymbol(source, defLine, body);
     await fs.writeFile(abs, res.text, "utf8");
     invalidateFileCache(abs);
@@ -991,7 +1085,14 @@ tool(
       indexErr = (e as Error).message;
     }
     const fresh = await loadIndex(ROOT);
-    const stillThere = (fresh.files[file]?.symbols ?? []).some((s) => s.line >= res.oldStart && s.line <= res.newEnd);
+    const freshSymbols = fresh.files[file]?.symbols ?? [];
+    const stillThere = freshSymbols.some((s) => s.line >= res.oldStart && s.line <= res.newEnd);
+    const dropped = droppedSymbols(
+      beforeSymbols,
+      freshSymbols,
+      { start: res.oldStart, end: res.oldEnd },
+      { start: res.oldStart, end: res.newEnd }
+    );
     await recordSlimdexWrite(ROOT, 1);
     const snapNote = snap.files > 0 ? `snapshot saved (${snap.dir})` : "snapshot skipped (file too large or unreadable)";
     const parseNote = indexErr
@@ -1001,7 +1102,8 @@ tool(
         : "⚠ re-indexed but no symbol parsed in the new range — check the body is a valid declaration";
     return (
       `Replaced ${name ?? `${file}:${defLine}`}: lines ${res.oldStart}-${res.oldEnd} → ${res.oldStart}-${res.newEnd} ` +
-      `(${res.newEnd - res.oldStart + 1} line(s)). ${snapNote}; ${parseNote}.`
+      `(${res.oldEnd - res.oldStart + 1} line(s) removed, ${res.newEnd - res.oldStart + 1} written). ` +
+      `${snapNote}; ${parseNote}${droppedNote(dropped)}.`
     );
   }
 );
@@ -1188,6 +1290,7 @@ async function replaceMany(
     abs: string;
     text: string;
     source: string; // original bytes, kept for rollback
+    before: readonly { name: string; line: number }[]; // pre-write symbols, for drop detection
     applied: ReturnType<typeof spliceSymbols>["applied"];
   }[] = [];
   for (const [file, list] of byFile) {
@@ -1198,9 +1301,10 @@ async function replaceMany(
     } catch {
       return `Cannot read ${file} — nothing was written.`;
     }
+    const before = (await loadIndex(ROOT)).files[file]?.symbols ?? [];
     try {
       const res = spliceSymbols(source, list);
-      pending.push({ file, abs, text: res.text, source, applied: res.applied });
+      pending.push({ file, abs, text: res.text, source, before, applied: res.applied });
     } catch (e) {
       return `${file}: ${(e as Error).message} — nothing was written.`;
     }
@@ -1265,12 +1369,21 @@ async function replaceMany(
   const lines: string[] = [];
   let warnings = 0;
   for (const p of pending) {
+    const freshSymbols = fresh.files[p.file]?.symbols ?? [];
     for (const a of p.applied) {
-      const parsed = (fresh.files[p.file]?.symbols ?? []).some((s) => s.line >= a.newStart && s.line <= a.newEnd);
+      const parsed = freshSymbols.some((s) => s.line >= a.newStart && s.line <= a.newEnd);
       if (!parsed) warnings++;
+      const dropped = droppedSymbols(
+        p.before,
+        freshSymbols,
+        { start: a.oldStart, end: a.oldEnd },
+        { start: a.newStart, end: a.newEnd }
+      );
       lines.push(
         `  ${p.file}: ${a.label} lines ${a.oldStart}-${a.oldEnd} → ${a.newStart}-${a.newEnd}` +
-          (parsed ? "" : " ⚠ no symbol parsed in the new range — check the body is a valid declaration")
+          ` (${a.oldEnd - a.oldStart + 1} removed, ${a.newEnd - a.newStart + 1} written)` +
+          (parsed ? "" : " ⚠ no symbol parsed in the new range — check the body is a valid declaration") +
+          droppedNote(dropped)
       );
     }
   }
@@ -1500,12 +1613,13 @@ tool(
     if (session) {
       const s = await loadSessionStats(ROOT);
       if (!Object.keys(s.tools).length) return "No tool calls recorded since the last checkpoint (or since this server started).";
-      return `slimdex ${buildStamp()}\nSINCE ${s.since} (this process / last checkpoint — not the repo's all-time totals):\n${formatStats(s)}`;
+      return `slimdex ${buildStamp()}\nSINCE ${s.since} (this process / last checkpoint — not the repo's all-time totals):\n${formatStats(s, await loadBypass(ROOT, s.since))}`;
     }
     // The build stamp rides on stats because that is where you look when a
     // result surprises you — and "the process predates the fix" is the answer
     // you cannot otherwise get from inside a session.
-    return `slimdex ${buildStamp()}\n${formatStats(await loadStats(ROOT))}`;
+    const all = await loadStats(ROOT);
+    return `slimdex ${buildStamp()}\n${formatStats(all, await loadBypass(ROOT, all.writeSince ?? all.since))}`;
   }
 );
 

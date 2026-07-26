@@ -85,6 +85,33 @@ export interface StatsFile {
   write: WriteStat;
 }
 
+/**
+ * What the PreToolUse hook actually observed, as opposed to what the server can
+ * infer from its own call log.
+ *
+ * The server cannot see a built-in `Edit` — it only notices, later, that a file
+ * changed underneath the index. That gap is why the write warning used to be
+ * phrased as a conditional ("IF any were whole-function rewrites"), and a
+ * conditional that fires on every session with more than one externally-edited
+ * file is a signal that gets tuned out — it was, in a real audit, and the
+ * warning was then repeated to a user as fact.
+ *
+ * The hook runs in front of the decision and knows both things the server
+ * cannot: how many lines of old code the edit re-sent, and whether a symbol
+ * actually covered them. It journals that verdict; this reads it back, so the
+ * report can state a measurement instead of a suspicion.
+ */
+export interface BypassStat {
+  /** Edits the hook confirmed were whole-symbol rewrites sent through a generic edit tool. */
+  wholeSymbolEdits: number;
+  /** Big edits with no symbol covering them — cases where a generic edit tool is CORRECT. */
+  correctGenericEdits: number;
+  /** Whole-file reads of large indexed files. */
+  wholeFileReads: number;
+  /** Symbols involved, most recent first, for naming names. */
+  symbols: string[];
+}
+
 /** Tools whose whole purpose is to be called BEFORE a change. */
 const PRE_EDIT_CHECKS = new Set(["find_tests", "dep_graph", "get_context", "changed_files"]);
 
@@ -336,7 +363,46 @@ export function formatUnused(s: StatsFile): string {
   );
 }
 
-export function formatStats(s: StatsFile): string {
+/**
+ * Read back the PreToolUse hook's journal.
+ *
+ * Best-effort and forgiving: the hook is a separate process that may not be
+ * installed at all, and a missing or half-written journal must degrade to "no
+ * measurement", never to an error. `since` bounds the window so the write block
+ * describes the same period as the counters above it.
+ */
+export async function loadBypass(root: string, since?: string): Promise<BypassStat | undefined> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(path.join(root, ".slimdex", "hook-events.jsonl"), "utf8");
+  } catch {
+    return undefined; // hook not installed, or nothing recorded yet
+  }
+  const out: BypassStat = { wholeSymbolEdits: 0, correctGenericEdits: 0, wholeFileReads: 0, symbols: [] };
+  const seen = new Set<string>();
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    let e: any;
+    try {
+      e = JSON.parse(line);
+    } catch {
+      continue; // a torn final line from a concurrent append
+    }
+    if (since && typeof e.t === "string" && e.t < since) continue;
+    if (e.tool === "Edit" || e.tool === "MultiEdit") {
+      if (e.fired) {
+        out.wholeSymbolEdits++;
+        if (e.symbol && !seen.has(e.symbol)) {
+          seen.add(e.symbol);
+          out.symbols.unshift(e.symbol);
+        }
+      } else out.correctGenericEdits++;
+    } else if (e.tool === "Read" && e.fired) out.wholeFileReads++;
+  }
+  return out;
+}
+
+export function formatStats(s: StatsFile, bypass?: BypassStat): string {
   const rows = Object.entries(s.tools).sort((a, b) => b[1].chars - a[1].chars);
   if (rows.length === 0) return "No tool calls recorded yet.";
   const total = rows.reduce((n, [, t]) => n + t.chars, 0);
@@ -365,7 +431,7 @@ export function formatStats(s: StatsFile): string {
     `  ${"TOTAL".padEnd(20)} ${String(totalCalls).padStart(5)} calls  ${String(total).padStart(9)} chars\n` +
     `(chars, not tokens — see stats.ts for why)` +
     followThrough +
-    formatWrite(s.write, { writeSince: s.writeSince, since: s.since }) +
+    formatWrite(s.write, { writeSince: s.writeSince, since: s.since }, bypass) +
     formatUnused(s)
   );
 }
@@ -379,7 +445,11 @@ export function formatStats(s: StatsFile): string {
  * replace_symbol is a decision. A number in your own transcript is the only
  * thing observed to interrupt that.
  */
-export function formatWrite(w: WriteStat | undefined, window?: { writeSince?: string; since?: string }): string {
+export function formatWrite(
+  w: WriteStat | undefined,
+  window?: { writeSince?: string; since?: string },
+  bypass?: BypassStat
+): string {
   if (!w) return "";
   const touched = w.slimdexCalls + w.externalFiles;
   if (touched === 0) return ""; // read-only session; nothing to say
@@ -406,11 +476,33 @@ export function formatWrite(w: WriteStat | undefined, window?: { writeSince?: st
         ` against the table above — a zero here may mean "not recorded yet", not "never done".)`
     );
   }
-  if (w.externalFiles > w.slimdexSymbols && w.externalFiles > 1) {
+  // Measured beats inferred. With the hook installed we know which edits were
+  // whole-symbol rewrites; without it we can only note that we cannot tell, and
+  // saying so is better than a conditional warning that fires either way.
+  if (bypass) {
+    if (bypass.wholeSymbolEdits > 0) {
+      const named = bypass.symbols.slice(0, 3).join(", ");
+      lines.push(
+        `  ⚠ ${bypass.wholeSymbolEdits} edit(s) re-sent a whole symbol's body through a generic edit tool` +
+          (named ? ` (${named}${bypass.symbols.length > 3 ? ", …" : ""})` : "") +
+          `. The old body bought nothing but the location — output tokens cost ~4-5x input.`
+      );
+    } else if (bypass.correctGenericEdits > 0) {
+      lines.push(
+        `  ${bypass.correctGenericEdits} large edit(s) had no symbol covering them — a generic edit tool was the` +
+          ` right call there, and replace_symbol would have cost more.`
+      );
+    }
+    if (bypass.wholeFileReads > 0) {
+      lines.push(
+        `  ⚠ ${bypass.wholeFileReads} whole-file read(s) of a large indexed file — get_file_skeleton then narrow` +
+          ` reads costs a fraction.`
+      );
+    }
+  } else if (w.externalFiles > w.slimdexSymbols && w.externalFiles > 1) {
     lines.push(
-      `  ⚠ Most edits bypassed replace_symbol. If any were whole-function rewrites, the old body was` +
-        ` re-sent purely to locate the change — output tokens cost ~4-5x input, so that is the` +
-        ` expensive half of the session.`
+      `  ${w.externalFiles} file(s) changed outside slimdex. Whether any were whole-symbol rewrites (the expensive` +
+        ` case) is not observable from here — the PreToolUse hook measures it directly: see docs/hooks.md.`
     );
   }
   if (w.blindEdits > 0) {

@@ -101,14 +101,16 @@ await fs.writeFile(settingsPath, JSON.stringify(settings, null, 2) + "\n", "utf8
 console.log(`
   matcher : ${MATCHER}
   command : ${COMMAND}
-  mode    : warn (advisory; the call still proceeds)
+  mode    : nudge (the model sees it; the call still proceeds)
 
 It speaks up only where slimdex actually wins — an Edit re-sending 25+ lines of
-existing code, or a whole-file Read of an indexed file over 12KB — and stays
-silent everywhere else, including repos with no .slimdex index.
+code that an indexed definition actually covers, or a whole-file Read of an
+indexed file over 12KB — and stays silent everywhere else, including repos with
+no .slimdex index, and big edits with no symbol to name.
 
-Set SLIMDEX_HOOK_MODE=block once you have watched it for a session and agree
-with what it flagged. Undo any time with: npm run install-hook -- --uninstall`);
+SLIMDEX_HOOK_MODE=warn reaches YOU instead of the model (audit without changing
+behaviour); =block cancels the call outright. Undo any time with:
+  npm run install-hook -- --uninstall`);
 
 if (sharedFile) {
   console.log(`

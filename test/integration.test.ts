@@ -37,6 +37,19 @@ const FILES: Record<string, string> = {
     "export function unused(): void {}",
   ].join("\n"),
   "src/stale.ts": ["export function staleTarget() {", "  return 1;", "}"].join("\n"),
+  // A class with nested methods, for drop detection: rewriting the class by
+  // name means the old body is never in front of the caller, so a `body` that
+  // silently loses a method is the failure mode replace_symbol has to catch.
+  "src/widget.ts": [
+    "export class Widget {",
+    "  paint() {",
+    "    return 1;",
+    "  }",
+    "  reset() {",
+    "    return 2;",
+    "  }",
+    "}",
+  ].join("\n"),
   "src/app.ts": [
     'import { add } from "./math.js";',
     "",
@@ -309,6 +322,60 @@ describe.skipIf(!built)("MCP server end to end", () => {
     // the new body is really on disk and immediately queryable via the index
     const body = await call("get_symbol_context", { name: "unused" });
     expect(body).toContain('return "now used"');
+  });
+
+  it("search_code refuses to report a stale zero, and finds the new file", async () => {
+    // The file list comes from the INDEX, so a file created since index_repo is
+    // never scanned — and the caller reads "no matches" as absence and goes
+    // looking elsewhere. Reported from a real session.
+    await fs.writeFile(
+      path.join(root, "src", "late-a.ts"),
+      "export function lateArrival() {\n  return 'needle-alpha';\n}\n",
+      "utf8"
+    );
+    const out = await call("search_code", { pattern: "needle-alpha" });
+    expect(out).toMatch(/late-a\.ts/);
+    expect(out).toMatch(/index was stale/);
+  });
+
+  it("find_definition refreshes before reporting a symbol absent", async () => {
+    await fs.writeFile(
+      path.join(root, "src", "late-b.ts"),
+      "export function lateBloomer() {\n  return 2;\n}\n",
+      "utf8"
+    );
+    const out = await call("find_definition", { name: "lateBloomer" });
+    expect(out).toMatch(/late-b\.ts/);
+    expect(out).toMatch(/it was stale/);
+  });
+
+  it("find_definition still reports a genuine miss, having re-checked", async () => {
+    const out = await call("find_definition", { name: "definitelyNotHere" });
+    expect(out).toMatch(/No definition indexed/);
+    expect(out).toMatch(/refreshed and re-checked/);
+  });
+
+  it("replace_symbol names a nested definition the new body dropped", async () => {
+    // The one safety property a generic edit tool had that this did not: handing
+    // over old_string is proof you know what you are overwriting. Addressing by
+    // name is cheaper precisely because the old body is NOT in front of you, so
+    // the tool has to say what went missing or the saving is bought with risk.
+    const out = await call("replace_symbol", {
+      name: "Widget",
+      body: ["export class Widget {", "  paint() {", "    return 99;", "  }", "}"].join("\n"),
+    });
+    expect(out).toMatch(/Replaced/);
+    expect(out).toMatch(/line\(s\) removed/);
+    expect(out).toMatch(/not the new one: reset/);
+  });
+
+  it("replace_symbol stays quiet when the body kept everything", async () => {
+    const out = await call("replace_symbol", {
+      name: "staleTarget",
+      body: ["export function staleTarget() {", "  return 42;", "}"].join("\n"),
+    });
+    expect(out).toMatch(/Replaced/);
+    expect(out).not.toMatch(/not the new one/);
   });
 
   it("replace_symbol refuses an unknown symbol instead of writing", async () => {
