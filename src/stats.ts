@@ -63,6 +63,24 @@ export interface WriteStat {
 export interface StatsFile {
   version: 2;
   since: string;
+  /**
+   * When the `write` counters started accumulating, which is NOT always `since`.
+   * The write block shipped after the tool counters did, so a repo that has been
+   * recording since last week migrates with a full tool history and a write
+   * history of zero. Reported together they read as a contradiction — the table
+   * showing `replace_symbol: 2 calls` directly above `replace_symbol: 0 call(s)`
+   * — and the instrument that is supposed to catch sloppy editing instead looks
+   * broken. Carrying the second window makes the gap explicit rather than
+   * silent.
+   *
+   * Optional, and deliberately not back-filled: a file already carrying write
+   * counters but no stamp was written by the build where the block had just
+   * shipped, and its true start is unrecoverable. Defaulting it to `since`
+   * would re-assert the very claim this field exists to retract, and defaulting
+   * it to `now` would quietly shrink a window the counts were not earned in.
+   * Absent means unknown, and the report says unknown.
+   */
+  writeSince?: string;
   tools: Record<string, ToolStat>;
   write: WriteStat;
 }
@@ -78,12 +96,10 @@ const emptyWrite = (): WriteStat => ({
   checks: 0,
 });
 
-const empty = (): StatsFile => ({
-  version: 2,
-  since: new Date().toISOString(),
-  tools: {},
-  write: emptyWrite(),
-});
+const empty = (): StatsFile => {
+  const now = new Date().toISOString();
+  return { version: 2, since: now, writeSince: now, tools: {}, write: emptyWrite() };
+};
 
 interface RootState {
   data: StatsFile;
@@ -127,7 +143,17 @@ export async function loadStats(root: string): Promise<StatsFile> {
     // counters are the one number a repo cannot reconstruct, and throwing them
     // away to add a field would be a poor trade.
     if (parsed && (parsed.version === 1 || parsed.version === 2) && parsed.tools) {
-      const data: StatsFile = { ...parsed, version: 2, write: { ...emptyWrite(), ...(parsed.write ?? {}) } };
+      // A file with no `write` block predates the counters entirely, so they
+      // begin now — not at `since`, which would credit the write block with a
+      // week of history it never observed. A file that HAS the block but no
+      // stamp keeps `undefined`: unknown, reported as unknown.
+      const writeSince: string | undefined = parsed.writeSince ?? (parsed.write ? undefined : new Date().toISOString());
+      const data: StatsFile = {
+        ...parsed,
+        version: 2,
+        writeSince,
+        write: { ...emptyWrite(), ...(parsed.write ?? {}) },
+      };
       states.set(rootKey, { data, session: empty(), flushTimer: null, checksSinceWrite: 0 });
       return data;
     }
@@ -339,7 +365,7 @@ export function formatStats(s: StatsFile): string {
     `  ${"TOTAL".padEnd(20)} ${String(totalCalls).padStart(5)} calls  ${String(total).padStart(9)} chars\n` +
     `(chars, not tokens — see stats.ts for why)` +
     followThrough +
-    formatWrite(s.write) +
+    formatWrite(s.write, { writeSince: s.writeSince, since: s.since }) +
     formatUnused(s)
   );
 }
@@ -353,16 +379,33 @@ export function formatStats(s: StatsFile): string {
  * replace_symbol is a decision. A number in your own transcript is the only
  * thing observed to interrupt that.
  */
-export function formatWrite(w: WriteStat | undefined): string {
+export function formatWrite(w: WriteStat | undefined, window?: { writeSince?: string; since?: string }): string {
   if (!w) return "";
   const touched = w.slimdexCalls + w.externalFiles;
   if (touched === 0) return ""; // read-only session; nothing to say
+  // Three cases, and the wrong one to collapse is the third: a stamp equal to
+  // `since` and a missing stamp mean different things, and only the first
+  // licenses comparing this block against the table above it.
+  const known = window?.writeSince;
+  const differs = known && window?.since && known !== window.since;
+  const unknown = !known && !!window?.since;
+  const heading = differs
+    ? `\nwrite discipline (since ${known}; the table above starts ${window!.since}):`
+    : unknown
+      ? `\nwrite discipline (window unknown; the table above starts ${window!.since}):`
+      : `\nwrite discipline:`;
   const lines = [
-    `\nwrite discipline:`,
+    heading,
     `  replace_symbol: ${w.slimdexCalls} call(s), ${w.slimdexSymbols} symbol(s) rewritten by name`,
     `  changed outside slimdex: ${w.externalFiles} file(s)`,
     `  pre-edit checks (find_tests/dep_graph/get_context/changed_files): ${w.checks}`,
   ];
+  if (differs || unknown) {
+    lines.push(
+      `  (These counters started later than the tool counters, so they cannot be compared` +
+        ` against the table above — a zero here may mean "not recorded yet", not "never done".)`
+    );
+  }
   if (w.externalFiles > w.slimdexSymbols && w.externalFiles > 1) {
     lines.push(
       `  ⚠ Most edits bypassed replace_symbol. If any were whole-function rewrites, the old body was` +

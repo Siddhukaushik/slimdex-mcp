@@ -199,6 +199,72 @@ describe("migrating a v1 stats file", () => {
   });
 });
 
+describe("migrating a stats file that predates the write block", () => {
+  it("starts the write window now, not at the tool window", async () => {
+    const root = await makeRepo({ "a.ts": TS });
+    await fs.mkdir(path.join(root, ".slimdex"), { recursive: true });
+    // A v1 file: a week of tool history, no write block at all.
+    await fs.writeFile(
+      path.join(root, ".slimdex", "stats.json"),
+      JSON.stringify({
+        version: 1,
+        since: "2026-07-19T00:00:00.000Z",
+        tools: { replace_symbol: { calls: 2, chars: 292, maxChars: 214, errors: 0 } },
+      }),
+      "utf8"
+    );
+    const s = await loadStats(root);
+    expect(s.since).toBe("2026-07-19T00:00:00.000Z");
+    // Dating the write counters to `since` would claim they watched a week of
+    // editing and saw none of it — the exact false accusation this guards.
+    expect(s.writeSince).not.toBe(s.since);
+    expect(Date.parse(s.writeSince)).toBeGreaterThan(Date.parse(s.since));
+    await resetStats(root);
+  });
+
+  it("leaves the window unknown when counters exist but no stamp does", async () => {
+    const root = await makeRepo({ "a.ts": TS });
+    await fs.mkdir(path.join(root, ".slimdex"), { recursive: true });
+    // Written by the build where the write block had just shipped: the counts
+    // are real, their start date is gone. Guessing `since` would restore the
+    // false claim; guessing `now` would shrink a window they were not earned in.
+    await fs.writeFile(
+      path.join(root, ".slimdex", "stats.json"),
+      JSON.stringify({
+        version: 2,
+        since: "2026-07-19T00:00:00.000Z",
+        tools: { replace_symbol: { calls: 2, chars: 292, maxChars: 214, errors: 0 } },
+        write: { slimdexSymbols: 0, slimdexCalls: 0, externalFiles: 4, blindEdits: 1, checks: 0 },
+      }),
+      "utf8"
+    );
+    const s = await loadStats(root);
+    expect(s.writeSince).toBeUndefined();
+    expect(formatWrite(s.write, { writeSince: s.writeSince, since: s.since })).toContain("window unknown");
+    await resetStats(root);
+  });
+
+  it("keeps the write window once it has been stamped", async () => {
+    const root = await makeRepo({ "a.ts": TS });
+    await fs.mkdir(path.join(root, ".slimdex"), { recursive: true });
+    await fs.writeFile(
+      path.join(root, ".slimdex", "stats.json"),
+      JSON.stringify({
+        version: 2,
+        since: "2026-07-19T00:00:00.000Z",
+        writeSince: "2026-07-24T00:00:00.000Z",
+        tools: {},
+        write: { slimdexSymbols: 3, slimdexCalls: 2, externalFiles: 0, blindEdits: 0, checks: 5 },
+      }),
+      "utf8"
+    );
+    const s = await loadStats(root);
+    expect(s.writeSince).toBe("2026-07-24T00:00:00.000Z");
+    expect(s.write.slimdexSymbols).toBe(3);
+    await resetStats(root);
+  });
+});
+
 describe("the report", () => {
   const base: WriteStat = {
     slimdexSymbols: 0,
@@ -241,6 +307,29 @@ describe("the report", () => {
   it("survives a stats file written before the write block existed", () => {
     expect(formatWrite(undefined)).toBe("");
   });
+
+  // The failure this prevents: a repo recording tool counts since last week
+  // migrates to v2 with a write history of zero, and the report prints
+  // `replace_symbol: 2 calls` in the table directly above
+  // `replace_symbol: 0 call(s)` in this block. Read together they look like a
+  // broken counter, which costs the block the credibility it needs to be acted
+  // on. Two windows, said out loud, instead of one window implied.
+  it("names its own window when it is narrower than the table's", () => {
+    const out = formatWrite(
+      { ...base, slimdexCalls: 1, slimdexSymbols: 1, checks: 1 },
+      { writeSince: "2026-07-26T00:00:00.000Z", since: "2026-07-24T00:00:00.000Z" }
+    );
+    expect(out).toContain("write discipline (since 2026-07-26T00:00:00.000Z");
+    expect(out).toContain("the table above starts 2026-07-24T00:00:00.000Z");
+    expect(out).toContain("not recorded yet");
+  });
+
+  it("stays quiet about windows when both counters started together", () => {
+    const same = "2026-07-24T00:00:00.000Z";
+    const out = formatWrite({ ...base, slimdexCalls: 1, slimdexSymbols: 1, checks: 1 }, { writeSince: same, since: same });
+    expect(out).toContain("\nwrite discipline:");
+    expect(out).not.toContain("not recorded yet");
+  });
 });
 
 // The write block catches doing something the expensive way. This catches not
@@ -251,6 +340,7 @@ describe("naming the tools that went unused", () => {
   const mk = (tools: Record<string, number>): StatsFile => ({
     version: 2,
     since: "2026-01-01T00:00:00.000Z",
+    writeSince: "2026-01-01T00:00:00.000Z",
     tools: Object.fromEntries(
       Object.entries(tools).map(([k, v]) => [k, { calls: v, chars: v * 100, maxChars: 100, errors: 0 }])
     ),
