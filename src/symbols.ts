@@ -318,7 +318,7 @@ function isComment(line: string): boolean {
 // raw selector text: `.hub-card.hub-allow-overflow` should be findable under
 // EITHER name, which is what you actually reach for. Several names can share
 // one line, capped so a deeply compound selector cannot flood the index.
-const CSS_FILE = /\.(css|scss|less)$/i;
+export const CSS_FILE = /\.(css|scss|less)$/i;
 const MAX_SELECTOR_NAMES = 4;
 
 function extractCssSymbols(source: string, maxSymbols: number): SymbolDef[] {

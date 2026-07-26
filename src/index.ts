@@ -261,7 +261,11 @@ tool(
   async ({ path: p }) => {
     const abs = await safeResolve(p);
     const src = await readFileCached(abs);
-    return formatOutline(toPosix(path.relative(ROOT, abs)), outline(src), src.split(/\r?\n/).length);
+    // The path is passed so the outliner can pick the right extractor — without
+    // it, a stylesheet reported "(no declarations detected)" from this tool
+    // while get_file_skeleton mapped the same file in full.
+    const rel = toPosix(path.relative(ROOT, abs));
+    return formatOutline(rel, outline(src, 400, rel), src.split(/\r?\n/).length);
   }
 );
 
@@ -408,13 +412,31 @@ tool(
   },
   async ({ name, kind, pathPrefix, limit, offset }) => {
     const index = await loadIndex(ROOT);
-    const all: string[] = [];
-    for (const [file, entry] of Object.entries(index.files)) {
-      if (pathPrefix && !underPrefix(file, pathPrefix)) continue;
-      for (const s of entry.symbols)
-        if (s.name === name && (!kind || s.kind === kind)) all.push(`${file}:${s.line}:${s.col}  ${s.kind} ${s.name}`);
+    // A CSS rule is indexed under its selector — ".hub-allow-overflow" — but the
+    // name you have in hand came from JSX: className="hub-section
+    // hub-allow-overflow", with no dots anywhere. So the copy-paste path was the
+    // one that failed, into a message telling you to spend a second call on
+    // search_symbols. Try the selector forms before declaring a miss.
+    const candidates = /^[.#]/.test(name) ? [name] : [name, `.${name}`, `#${name}`];
+    let matchedAs = name;
+    let all: string[] = [];
+    for (const candidate of candidates) {
+      const hits: string[] = [];
+      for (const [file, entry] of Object.entries(index.files)) {
+        if (pathPrefix && !underPrefix(file, pathPrefix)) continue;
+        for (const s of entry.symbols)
+          if (s.name === candidate && (!kind || s.kind === kind)) hits.push(`${file}:${s.line}:${s.col}  ${s.kind} ${s.name}`);
+      }
+      if (hits.length) {
+        all = hits;
+        matchedAs = candidate;
+        break;
+      }
     }
     if (!all.length) return `No definition indexed for "${name}". Try search_symbols for a fuzzy match.`;
+    // Say so when the bare name was resolved as a selector, so the caller learns
+    // the indexed form rather than wondering why it worked.
+    const resolvedNote = matchedAs === name ? "" : `  (matched as "${matchedAs}")`;
     // This tool had NO limit. Every sibling (search_code, find_references,
     // search_symbols) pages; find_definition returned every hit because "a
     // definition" sounds singular. On Elasticsearch — 31k files, 316k symbols —
@@ -430,7 +452,7 @@ tool(
         ? `\n… ${all.length - shown} more. Narrow with pathPrefix${kind ? "" : ' or kind:"class"'}, or page with offset:${shown}.`
         : "";
     return (
-      `${t(`${all.length} definition candidate(s) for "${name}"`, `${all.length} def(s) "${name}"`)}` +
+      `${t(`${all.length} definition candidate(s) for "${name}"`, `${all.length} def(s) "${name}"`)}${resolvedNote}` +
       `${all.length > page.length ? `, showing ${start + 1}-${shown}` : ""}:\n${page.join("\n")}${more}`
     );
   }
@@ -786,7 +808,7 @@ tool(
       after: z
         .string()
         .optional()
-        .describe("INSERT mode: add `body` as a NEW symbol immediately after this existing symbol's closing brace."),
+        .describe("INSERT mode: add `body` as a NEW symbol immediately after this existing symbol's closing brace. Pin which occurrence with path + line when the name repeats inside one file (normal for CSS)."),
       before: z
         .string()
         .optional()
@@ -884,10 +906,11 @@ tool(
     // ---- INSERT mode: a NEW symbol next to an existing anchor ----
     if (after || before) {
       if (after && before) return "Give either after or before, not both.";
-      if (name || p || line)
-        return "after/before is INSERT mode — drop name/path/line (those replace an existing symbol) and give only the anchor plus body.";
+      if (name)
+        return "after/before is INSERT mode — drop `name` (that replaces an existing symbol) and give only the anchor plus body.";
+      if ((p && !line) || (line && !p)) return "path and line go together when pinning an insert anchor.";
       if (typeof body !== "string" || !body.length) return "body (the new definition to insert) is required.";
-      return insertBesideSymbol((after ?? before)!, after ? "after" : "before", body, pathPrefix);
+      return insertBesideSymbol((after ?? before)!, after ? "after" : "before", body, pathPrefix, p, line);
     }
 
     if (typeof body !== "string" || !body.length) return "body (the complete replacement definition) is required.";
@@ -955,9 +978,32 @@ async function insertBesideSymbol(
   anchor: string,
   position: "before" | "after",
   body: string,
-  pathPrefix?: string
+  pathPrefix?: string,
+  anchorPath?: string,
+  anchorLine?: number
 ): Promise<string> {
   const index = await loadIndex(ROOT);
+
+  // An explicit path+line pins WHICH occurrence, which pathPrefix cannot do
+  // when the duplicates share a file. For a stylesheet that is the normal
+  // shape, not an edge case: a base rule plus two media-query overrides means
+  // `.swarm-arrow` legitimately appears three times in one file, and the
+  // name-only anchor was therefore unusable exactly where CSS support was
+  // supposed to help.
+  if (anchorPath && anchorLine) {
+    let abs: string;
+    try {
+      abs = await safeResolve(anchorPath);
+    } catch {
+      return `Cannot resolve ${anchorPath} (does it exist?).`;
+    }
+    const file = toPosix(path.relative(ROOT, abs));
+    const entry = index.files[file];
+    if (entry && (await changedSinceIndex(file, entry)))
+      return `${file} changed since index_repo — re-index before inserting into it.`;
+    return writeInsert(file, anchorLine, `${file}:${anchorLine}`, position, body);
+  }
+
   let found: { file: string; line: number; kind: string }[] = [];
   for (const [f, entry] of Object.entries(index.files))
     for (const s of entry.symbols) if (s.name === anchor) found.push({ file: f, line: s.line, kind: s.kind });
@@ -970,19 +1016,38 @@ async function insertBesideSymbol(
         found.map((d) => `  ${d.file}:${d.line}  ${d.kind}`).join("\n");
     found = scoped;
   }
-  if (found.length > 1)
+  if (found.length > 1) {
+    // Only suggest pathPrefix when it can actually help. Every duplicate in one
+    // file — the normal shape of a stylesheet, where a base rule plus media
+    // overrides repeat a selector — makes pathPrefix useless, and saying it
+    // anyway sends the caller down a road with no exit.
+    const sameFile = new Set(found.map((d) => d.file)).size === 1;
+    const how = sameFile
+      ? `all ${found.length} are in the same file, so pathPrefix cannot help — pin one with path + line`
+      : `narrow with pathPrefix, or pin one with path + line`;
     return (
-      `"${anchor}" has ${found.length} definitions — narrow with pathPrefix, I won't guess which one to insert beside:\n` +
+      `"${anchor}" has ${found.length} definitions — ${how}. I won't guess which one to insert beside:\n` +
       found.map((d) => `  ${d.file}:${d.line}  ${d.kind}`).join("\n")
     );
+  }
 
-  const { file, line: anchorLine } = found[0];
+  const { file, line: resolvedLine } = found[0];
   const entry = index.files[file];
   // An anchor whose file has drifted means the line number is a guess, and a
   // guessed insertion point puts a method inside someone else's function body.
   if (entry && (await changedSinceIndex(file, entry)))
     return `${file} changed since index_repo — re-index before inserting into it.`;
+  return writeInsert(file, resolvedLine, anchor, position, body);
+}
 
+/** The write half, shared by the name-resolved and path+line-pinned anchors. */
+async function writeInsert(
+  file: string,
+  anchorLine: number,
+  label: string,
+  position: "before" | "after",
+  body: string
+): Promise<string> {
   const abs = path.join(ROOT, file);
   let source: string;
   try {
@@ -1016,7 +1081,7 @@ async function insertBesideSymbol(
       ? "re-indexed, a symbol is present in the inserted range"
       : "⚠ re-indexed but no symbol parsed in the inserted range — check the body is a valid declaration";
   return (
-    `Inserted ${position} ${anchor} in ${file}: new lines ${res.start}-${res.end} ` +
+    `Inserted ${position} ${label} in ${file}: new lines ${res.start}-${res.end} ` +
     `(${res.end - res.start + 1} line(s)). ${snapNote}; ${parseNote}.`
   );
 }
