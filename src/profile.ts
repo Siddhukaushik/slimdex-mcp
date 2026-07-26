@@ -68,6 +68,11 @@ export const BATCH_ONLY = [
   "digest_get",
   "snapshot",
   "stats",
+  // Setup, not retrieval: needed once per machine, so it earns no schema in the
+  // lean tool list. `brief` names it when the hook is missing, and lean's own
+  // note says hidden tools still run through batch — so the advice stays
+  // actionable without the surface.
+  "install_hook",
 ];
 
 /**

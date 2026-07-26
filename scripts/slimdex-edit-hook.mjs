@@ -74,6 +74,30 @@ const DEF_LINE_WINDOW = Number(process.env.SLIMDEX_HOOK_DEF_WINDOW || 10);
 /** Don't scan a pathological file to locate old_string; the advice isn't worth it. */
 const MAX_SCAN_BYTES = 8_000_000;
 
+// CLIENTS. Claude Code and VS Code Copilot both run PreToolUse hooks, and VS
+// Code reads .claude/settings.json directly — so one install covers both. What
+// does NOT carry over is the vocabulary: Copilot's built-ins are `editFiles`,
+// `createFile`, `readFile` (sometimes namespaced `edit/editFiles`), and its
+// tool_input uses camelCase keys. Matching only Claude Code's names is the same
+// silent-no-op the stdout default was, just wearing a different client.
+//
+// Unknown names are treated as "not an edit" rather than guessed at: run with
+// SLIMDEX_HOOK_TRACE=1 for one session and the journal records every tool_name
+// and input key this client actually sends, which turns a guess into a
+// measurement. That is how the CRLF bug should have been found.
+const norm = (name) => String(name || "").split("/").pop();
+const EDIT_TOOLS = new Set([
+  "Edit", "MultiEdit", "editFiles", "replace_string_in_file", "insert_edit_into_file", "apply_patch",
+]);
+const WRITE_TOOLS = new Set(["Write", "createFile", "create_file"]);
+const READ_TOOLS = new Set(["Read", "readFile", "read_file"]);
+
+/** First present key, so one hook reads both snake_case and camelCase clients. */
+const pick = (obj, ...keys) => {
+  for (const k of keys) if (obj && typeof obj[k] === "string" && obj[k]) return obj[k];
+  return "";
+};
+
 /** Extensions slimdex indexes; anything else it has nothing better to offer for. */
 const INDEXED = new Set([
   ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".py", ".go", ".rs", ".java",
@@ -137,9 +161,17 @@ function advise(message) {
   }
   // nudge: the model sees this next to the tool result, and the call proceeds.
   // No permissionDecision field — absent means the normal permission flow, which
-  // is what we want and is stable across Claude Code versions.
+  // is what we want and is stable across clients.
+  //
+  // `systemMessage` rides along deliberately. additionalContext is verified on
+  // Claude Code but is NOT documented for PreToolUse on VS Code Copilot, and a
+  // channel that might be ignored is exactly how this hook spent its first
+  // release talking to nobody. systemMessage is documented on both and reaches
+  // the user, so the worst case degrades to "a human sees it" instead of
+  // silence. Costs one line; removes a whole class of null mode.
   process.stdout.write(
     JSON.stringify({
+      systemMessage: text,
       hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: text },
     }) + "\n"
   );
@@ -233,19 +265,27 @@ try {
   // install safe: no index, no opinion.
   if (!existsSync(path.join(cwd, ".slimdex", "index.json"))) process.exit(0);
 
-  const tool = hook.tool_name || "";
+  const tool = norm(hook.tool_name);
   const input = hook.tool_input || {};
-  const file = input.file_path || input.path || "";
+  const file = pick(input, "file_path", "filePath", "path", "uri");
   const ext = path.extname(file).toLowerCase();
 
-  if (tool === "Edit" || tool === "MultiEdit") {
+  // Discovery mode: record what this client actually sends, then exit. One
+  // session with this on tells you the real tool names and input keys instead
+  // of inferring them from documentation.
+  if (process.env.SLIMDEX_HOOK_TRACE) {
+    journal(cwd, { trace: true, tool: hook.tool_name, inputKeys: Object.keys(input) });
+  }
+
+  if (EDIT_TOOLS.has(tool)) {
     // MultiEdit carries an array; judge it by its largest single replacement,
     // since that is the one that would have been a replace_symbol.
     const edits = Array.isArray(input.edits) ? input.edits : [input];
     let biggest = null;
     for (const e of edits) {
-      const n = lineCount(e.old_string);
-      if (!biggest || n > biggest.n) biggest = { n, old: e.old_string };
+      const old = pick(e, "old_string", "oldString", "oldStr", "old");
+      const n = lineCount(old);
+      if (!biggest || n > biggest.n) biggest = { n, old };
     }
     if (!biggest || biggest.n < EDIT_LINE_THRESHOLD || !INDEXED.has(ext)) process.exit(0);
 
@@ -275,7 +315,7 @@ try {
     );
   }
 
-  if (tool === "Write" && file && existsSync(file)) {
+  if (WRITE_TOOLS.has(tool) && file && existsSync(file)) {
     const size = statSync(file).size;
     if (size >= READ_BYTE_THRESHOLD && INDEXED.has(ext)) {
       journal(cwd, { tool, file: path.basename(file), bytes: size, fired: true });
@@ -287,7 +327,7 @@ try {
     process.exit(0);
   }
 
-  if (tool === "Read" && file) {
+  if (READ_TOOLS.has(tool) && file) {
     // A ranged read is already the disciplined move; only whole-file reads qualify.
     if (input.offset || input.limit) process.exit(0);
     if (!INDEXED.has(ext) || !existsSync(file)) process.exit(0);

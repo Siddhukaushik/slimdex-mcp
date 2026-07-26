@@ -57,15 +57,49 @@ letting you find out from a colleague.
 
 ### VS Code
 
-Claude Code's VS Code extension reads the same files as the terminal, so there
-is nothing extension-specific to configure. Hooks are read at session start —
-an already-open session won't pick up a change.
+**Claude Code's VS Code extension** reads the same files as the terminal, so
+there is nothing extension-specific to configure. Hooks are read at session
+start — an already-open session won't pick up a change.
 
-Other MCP clients in VS Code (Cline, Continue, Copilot) do not have this hook
-mechanism. The closest repo-level substitute for Copilot is the shipped
-[Copilot instructions](../.github/copilot-instructions.md) file: it is
-advisory, not enforced, but it puts the same narrow-retrieval discipline into
-the model's prompt every turn.
+**GitHub Copilot agent mode** now runs hooks too, including `PreToolUse`, and it
+reads `.claude/settings.json` and `~/.claude/settings.json` directly (alongside
+its own `.github/hooks/*.json`). So a single `--global` install covers both
+editors. Two things do *not* carry over, and the hook handles both:
+
+- **Tool names.** Copilot's built-ins are `editFiles`, `createFile`, `readFile`,
+  sometimes namespaced as `edit/editFiles`. The installed matcher covers both
+  vocabularies and the hook re-checks the name itself, so an over-broad matcher
+  costs nothing.
+- **Input keys.** Copilot uses `filePath`/`oldString` where Claude Code uses
+  `file_path`/`old_string`. The hook reads either.
+
+One caveat worth knowing: `additionalContext` — the field that lets `nudge`
+reach the model without cancelling — is verified on Claude Code but is **not
+documented for `PreToolUse` on Copilot**. So `nudge` also emits `systemMessage`,
+which both clients document and which reaches *you*. Worst case on Copilot, the
+advice degrades to a human seeing it rather than vanishing. If you want a
+guarantee the model is told, use `block` there: exit 2 and stderr-to-model are
+documented on both.
+
+### Don't guess the vocabulary — measure it
+
+Set `SLIMDEX_HOOK_TRACE=1` and run one session. Every hook invocation is
+journalled with the client's real `tool_name` and the actual keys of its
+`tool_input`:
+
+```json
+{"t":"…","trace":true,"tool":"edit/editFiles","inputKeys":["filePath","oldString"]}
+```
+
+That turns "which names does this client send" from a documentation question
+into a two-minute measurement. Worth doing before trusting the hook in any new
+client — the CRLF bug in this same file passed every fixture and was only
+caught by running it against a real repo.
+
+Other MCP clients (Cline, Continue) still have no hook mechanism. The closest
+repo-level substitute is the shipped
+[Copilot instructions](../.github/copilot-instructions.md): advisory, not
+enforced, but it puts the same narrow-retrieval discipline in the prompt.
 
 ### Why `npm install` doesn't just do it
 

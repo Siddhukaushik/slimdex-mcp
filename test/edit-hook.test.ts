@@ -128,12 +128,57 @@ describe("hook advises where replace_symbol wins", () => {
   });
 });
 
+describe("hook speaks both clients' vocabularies", () => {
+  // VS Code Copilot runs PreToolUse hooks and reads .claude/settings.json, so
+  // one install covers both editors — but its tools are named differently and
+  // its tool_input is camelCase. Matching only Claude Code's names would leave
+  // the hook silently inert in VS Code.
+  it("fires on Copilot's editFiles with camelCase input", async () => {
+    const r = await runHook({
+      cwd: repo,
+      tool_name: "editFiles",
+      tool_input: { filePath: path.join(repo, "sym.ts"), oldString: symBody },
+    });
+    expect(r.out).toMatch(/paintBoard/);
+  });
+
+  it("fires on a namespaced tool name", async () => {
+    const r = await runHook({
+      cwd: repo,
+      tool_name: "edit/editFiles",
+      tool_input: { filePath: path.join(repo, "sym.ts"), oldString: symBody },
+    });
+    expect(r.out).toMatch(/paintBoard/);
+  });
+
+  it("flags Copilot's readFile on a large indexed file", async () => {
+    const r = await runHook({
+      cwd: repo,
+      tool_name: "read/readFile",
+      tool_input: { filePath: path.join(repo, "big.ts") },
+    });
+    expect(r.out).toMatch(/get_file_skeleton/);
+  });
+
+  it("ignores a tool it does not recognise rather than guessing", async () => {
+    const r = await runHook({
+      cwd: repo,
+      tool_name: "runTerminalCommand",
+      tool_input: { filePath: path.join(repo, "sym.ts"), oldString: symBody },
+    });
+    expect(r.out.trim()).toBe("");
+  });
+});
+
 describe("hook reaches the intended audience", () => {
   it("nudge puts the advice where the MODEL sees it, without cancelling", async () => {
     const r = await runHook(editOn("sym.ts", symBody), "nudge");
     const payload = JSON.parse(r.out.trim());
     expect(payload.hookSpecificOutput.hookEventName).toBe("PreToolUse");
     expect(payload.hookSpecificOutput.additionalContext).toMatch(/replace_symbol/);
+    // Rides along because additionalContext is undocumented for PreToolUse on
+    // VS Code: if that channel is dropped, a human still sees the advice.
+    expect(payload.systemMessage).toMatch(/replace_symbol/);
     // No permissionDecision: absent means the normal permission flow.
     expect(payload.hookSpecificOutput.permissionDecision).toBeUndefined();
     expect(r.code).toBe(0);

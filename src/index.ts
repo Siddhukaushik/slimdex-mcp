@@ -47,6 +47,7 @@ import { rankIntentDetailed } from "./intent.js";
 import { isStale, stalenessNote } from "./freshness.js";
 import { buildPack } from "./pack.js";
 import { staleCovered, formatDigest } from "./digest.js";
+import { hookState, hookNote, runInstaller, type Scope } from "./hookstate.js";
 import { terse, t, fileHeader, countNotice, truncNotice } from "./terse.js";
 import { factFull, formatFactList, PREVIEW_CHARS, SEARCH_PREVIEW_CHARS, SOFT_MAX_FACT_CHARS, HARD_MAX_FACT_CHARS } from "./memfmt.js";
 import { checkRepeat } from "./dedupe.js";
@@ -178,14 +179,14 @@ export const INSTRUCTIONS_BUDGET = 2000;
 const INSTRUCTIONS = `slimdex answers questions without reading whole files. The discipline IS the saving.
 
 OPEN: call brief FIRST — repo summary, where recent sessions dug, saved conclusions checked against the live index.
-FIND: symbol-shaped -> find_definition / find_references / get_context. Behaviour but not the name -> search_intent. Literal strings -> search_code. A whole AREA ("how does auth work") -> context_pack: ONE bounded bundle, not ~10 calls that re-cost every later turn. Scope with pathPrefix.
+FIND: symbol-shaped -> find_definition / find_references / get_context. Behaviour but not the name -> search_intent. Literal strings -> search_code. A whole AREA ("how does auth work") -> context_pack: ONE bounded bundle, not ~10 calls re-costing every turn. Scope with pathPrefix.
 READ: get_file_skeleton before opening anything over ~300 lines, then FOLLOW THROUGH — get_symbol_context names:[…] or read_lines for just those spans, never the whole file after.
 WRITE — output tokens cost ~4-5x input, so this is where the money is:
  * replace_symbol name:"X" body:"…" rewrites a whole function/class/method WITHOUT re-sending the old code to locate it. Snapshots, re-indexes, reports the new span. Many at once: edits:[{name,body},…]. Never re-emit a file to change a few lines; never splice by line number.
- * find_tests on a symbol BEFORE changing it — run only the covering tests, or SEE that none cover it and treat that as risk up front.
+ * find_tests on a symbol BEFORE changing it — run only the covering tests, or SEE that none cover it and treat that as risk.
  * dep_graph root:"<file>" before touching a shared module; changed_files for which symbols a dirty tree lands in.
 SAVE: memory_save a conclusion the moment it is confirmed, never "at the end" — unsaved findings die with the tab. Lead with the conclusion; only ~150 chars preview. digest_save an architecture cheat-sheet once you know the shape.
-index_repo is incremental — re-run it like \`git fetch\` before trusting a search.`;
+index_repo is incremental — re-run like \`git fetch\` before trusting a search.`;
 
 // ---------------------------------------------------------------------------
 // Handler registry. Each handler returns a plain string. Registering through
@@ -1758,7 +1759,49 @@ tool(
     const freshLine = staleCount
       ? `\n⚠ ${staleCount} file(s) changed since the index was built — run index_repo before trusting line numbers.`
       : "";
-    return coldStart + composeBrief({ index, facts: mem.facts, recap, root: ROOT, build: buildStamp() }) + freshLine;
+    // The enforcement half of this server lives in the client's config, where
+    // the server cannot put it — so the one thing it CAN do is notice it is
+    // missing, at the one moment the whole session is being oriented.
+    const hooks = hookNote(await hookState(ROOT));
+    return coldStart + composeBrief({ index, facts: mem.facts, recap, root: ROOT, build: buildStamp() }) + freshLine + hooks;
+  }
+);
+
+tool(
+  "install_hook",
+  {
+    title: "Install the PreToolUse hook",
+    description:
+      "Wire slimdex's write discipline into the CLIENT, which registering the MCP server cannot do — the protocol has " +
+      "no mechanism for a server to add a hook, so this is the one call that closes the gap. Writes a PreToolUse hook " +
+      "that speaks up ONLY when an edit re-sends 25+ lines that an indexed symbol actually covers, or a whole file over " +
+      "12KB is read. Merges rather than clobbers, is idempotent, and prints exactly what changed. scope: claude-global " +
+      "(default, all your repos) | claude-local | claude-project | copilot-global (VS Code, all your repos) | " +
+      "copilot-project (.github/hooks, COMMITTED). Use uninstall:true to remove it.",
+    inputSchema: {
+      scope: z
+        .enum(["claude-global", "claude-local", "claude-project", "copilot-global", "copilot-project"])
+        .optional()
+        .describe("Which config to write. Default claude-global; use copilot-global for a VS Code-only setup."),
+      uninstall: z.boolean().optional().describe("Remove the hook instead of adding it."),
+    },
+  },
+  async ({ scope, uninstall }) => {
+    const target: Scope = scope ?? "claude-global";
+    const before = await hookState(ROOT);
+    const output = await runInstaller(ROOT, target, uninstall === true);
+    const after = await hookState(ROOT);
+    const changed =
+      before.installed === after.installed
+        ? "(no change in detected state)"
+        : after.installed
+          ? "Hook is now detected."
+          : "Hook is no longer detected.";
+    return (
+      `${output}\n\n${changed}\n` +
+      `Hooks are read at SESSION START — restart this chat session for it to take effect.` +
+      (after.installed ? `\nDetected in: ${after.where.join(", ")}` : "")
+    );
   }
 );
 
