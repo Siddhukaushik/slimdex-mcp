@@ -21,12 +21,47 @@ written and obvious at call time.
 ## Install
 
 ```bash
-npm run install-hook
+npm run install-hook              # <repo>/.claude/settings.json       shared, committed
+npm run install-hook -- --local   # <repo>/.claude/settings.local.json yours, gitignored
+npm run install-hook -- --global  # ~/.claude/settings.json            yours, every repo
+npm run install-hook -- --uninstall
 ```
 
-That's it — it writes the entry into this project's `.claude/settings.json`,
-resolves the absolute path for you, merges rather than clobbers, and is safe to
-re-run. `-- --global` installs it for every repo; `-- --uninstall` removes it.
+It resolves the absolute path for you, merges rather than clobbers, and is safe
+to re-run.
+
+### Which file — this matters on a shared repo
+
+Claude Code reads hooks from **its own** settings files. It does **not** read
+`.vscode/settings.json`; that is VS Code's config and putting hooks there does
+nothing. The three it does read:
+
+| File | Scope | Committed |
+|---|---|---|
+| `~/.claude/settings.json` | you, every repo | no |
+| `<repo>/.claude/settings.json` | that repo, everyone | **yes** |
+| `<repo>/.claude/settings.local.json` | that repo, you only | no |
+
+The hook command contains an **absolute path to your clone**, so on a repo you
+share with a team, do not put it in the committed file — a teammate would get a
+hook pointing at a directory that does not exist on their machine. Use
+`--local`, or `--global`.
+
+`--global` is the usual right answer, and it is safe precisely because the hook
+exits silently in any repo with no `.slimdex` index: it has no opinion where
+slimdex isn't in use.
+
+The installer prints a warning if you write to the shared file, rather than
+letting you find out from a colleague.
+
+### VS Code
+
+Claude Code's VS Code extension reads the same files as the terminal, so there
+is nothing extension-specific to configure. Hooks are read at session start —
+an already-open session won't pick up a change.
+
+A different MCP client in VS Code (Cline, Continue, Copilot) has its own
+configuration and no equivalent feature; none of this applies there.
 
 ### Why `npm install` doesn't just do it
 
