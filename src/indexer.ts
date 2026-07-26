@@ -102,11 +102,12 @@ const CODE_EXT = new Set([
   // Apex. Syntactically Java-like, so the existing Java/C# rules find its
   // classes and methods without needing rules of their own.
   ".cls", ".trigger",
-  // Markup and styles. These carry few or no code symbols (verified: CSS → 0,
-  // SCSS surfaces only real `@function` decls, HTML only inline <script> funcs —
-  // no junk), but indexing them makes them searchable/readable through slimdex,
-  // which frontend and LWC repos (HTML templates + CSS/SCSS alongside JS/Apex)
-  // genuinely need. read_lines / search_code / get_file_skeleton then work on them.
+  // Markup and styles. Stylesheets now emit their RULES as symbols (see
+  // extractCssSymbols) — until they did, a frontend repo had most of its file
+  // tree indexed for text search but invisible to every symbol-shaped tool:
+  // `.swarm-flow` was unfindable, a stylesheet skeletoned to "(no declarations
+  // detected)", and replace_symbol could not address a rule. HTML still
+  // surfaces only inline <script> functions.
   ".css", ".scss", ".less", ".html", ".htm",
 ]);
 
@@ -403,7 +404,7 @@ export async function buildOrRefresh(root: string, force = false): Promise<Index
     // silently report zero edits just because it threw its own baseline away.
     const prior = loaded.files[rel];
     if (prior && prior.contentHash !== contentHash) changedPaths.push(rel);
-    const extracted = parser.extractSymbols(source, 2001);
+    const extracted = parser.extractSymbols(source, 2001, rel);
     const entry: FileEntry = {
       mtimeMs: stat.mtimeMs,
       contentHash,

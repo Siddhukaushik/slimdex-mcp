@@ -306,7 +306,63 @@ function isComment(line: string): boolean {
   return t.startsWith("//") || t.startsWith("*") || t.startsWith("/*") || t.startsWith("--");
 }
 
-export function extractSymbols(source: string, maxSymbols = 2000): SymbolDef[] {
+// ---- CSS / SCSS / LESS ----
+//
+// These extensions were indexed for TEXT SEARCH but emitted no symbols at all,
+// so a stylesheet skeletoned to "(no declarations detected)", `.swarm-flow` was
+// invisible to find_definition, and replace_symbol could not address a rule.
+// On a frontend repo (one real case: 60 .jsx + 32 .css) that is most of the
+// file tree missing from every symbol-shaped tool.
+//
+// A rule is addressed by the class/id names in its selector list, not by the
+// raw selector text: `.hub-card.hub-allow-overflow` should be findable under
+// EITHER name, which is what you actually reach for. Several names can share
+// one line, capped so a deeply compound selector cannot flood the index.
+const CSS_FILE = /\.(css|scss|less)$/i;
+const MAX_SELECTOR_NAMES = 4;
+
+function extractCssSymbols(source: string, maxSymbols: number): SymbolDef[] {
+  const out: SymbolDef[] = [];
+  for (const [i, { line, masked }] of scanLines(source).entries()) {
+    if (!masked.trim()) continue;
+    const openIdx = masked.indexOf("{");
+    if (openIdx < 0) continue; // a declaration, not a rule opening
+    const head = masked.slice(0, openIdx).trim();
+    if (!head) continue;
+
+    // At-rules first, so `@media (max-width: 700px) {` is not read as a selector.
+    const at = /^@([A-Za-z-]+)\s*(.*)$/.exec(head);
+    if (at) {
+      const cond = at[2].trim().replace(/\s+/g, " ").slice(0, 60);
+      const name = at[1] === "keyframes" || at[1] === "font-face" ? `@${at[1]} ${cond}`.trim() : `@${at[1]}${cond ? " " + cond : ""}`;
+      out.push({ name, kind: "at-rule", line: i + 1, col: line.indexOf("@") + 1 || 1, depth: 0 });
+      if (out.length >= maxSymbols) break;
+      continue;
+    }
+
+    // Every distinct class/id mentioned in the selector list.
+    const names: string[] = [];
+    for (const m of head.matchAll(/[.#][A-Za-z_-][A-Za-z0-9_-]*/g)) {
+      if (!names.includes(m[0])) names.push(m[0]);
+      if (names.length >= MAX_SELECTOR_NAMES) break;
+    }
+    for (const n of names) {
+      out.push({ name: n, kind: "rule", line: i + 1, col: (line.indexOf(n) + 1) || 1, depth: 0 });
+      if (out.length >= maxSymbols) return out;
+    }
+  }
+  return out;
+}
+
+export function extractSymbols(source: string, maxSymbols = 2000, file?: string): SymbolDef[] {
+  // Stylesheets get their own extractor rather than sharing the rule list: the
+  // JS/Java rules would match nothing useful in CSS, and a selector regex let
+  // loose on JavaScript would happily read `.filter(x => {` as a class rule.
+  if (file && CSS_FILE.test(file)) return extractCssSymbols(source, maxSymbols);
+  return extractCodeSymbols(source, maxSymbols);
+}
+
+function extractCodeSymbols(source: string, maxSymbols = 2000): SymbolDef[] {
   const out: SymbolDef[] = [];
   const seen = new Set<string>();
 
