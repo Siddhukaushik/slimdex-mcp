@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.Siddhukaushik/slimdex-mcp",
-  "description": "A local MCP server for narrow code retrieval: outlines, symbol context, a dependency graph, and persistent memory instead of whole-file reads.",
+  "description": "Narrow code retrieval for agents: outlines, symbol context, dep graph, persistent memory.",
   "repository": {
     "url": "https://github.com/Siddhukaushik/slimdex-mcp",
     "source": "github"
