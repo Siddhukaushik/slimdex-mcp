@@ -41,8 +41,16 @@ jobs:
       - name: Build package
         run: npm run build
 
+      # Skipped when the version is already on npm (e.g. it was published by
+      # hand). The MCP Registry step below still needs to run either way.
       - name: Publish package to npm
-        run: npm publish --access public
+        run: |
+          VERSION=$(jq -r .version package.json)
+          if npm view "slimdex-mcp@$VERSION" version >/dev/null 2>&1; then
+            echo "slimdex-mcp@$VERSION already on npm; skipping publish."
+          else
+            npm publish --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
