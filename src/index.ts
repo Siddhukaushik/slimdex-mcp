@@ -59,7 +59,7 @@ function text(s: string) {
   return { content: [{ type: "text" as const, text: s }] };
 }
 
-export const SERVER_VERSION = "1.0.0";
+export const SERVER_VERSION = "1.0.1";
 
 /**
  * Which build is actually answering you.
