@@ -1,0 +1,14 @@
+node_modules
+dist
+.git
+.github
+.slimdex
+.claude
+test
+docs
+*.log
+npm-debug.log*
+.env
+.mcp.json
+smoke-test.mjs
+vitest.config.ts
