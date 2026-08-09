@@ -205,6 +205,24 @@ const server = new McpServer(
   { instructions: profile() === "lean" ? INSTRUCTIONS + leanNote() : INSTRUCTIONS }
 );
 
+// Tools that touch state. Everything else only reads the index, so a client
+// can retry it freely — but a client can only know that if we say so.
+//
+// Annotations ride along in every `tools/list` payload, which is re-sent each
+// turn, so they are emitted ONLY for these: on a read-only tool the hint is
+// both the spec default and the obvious guess, and 23 copies of it would cost
+// schema chars every turn to say nothing. Disclosure where it changes a
+// decision, silence where it doesn't.
+const SIDE_EFFECT_TOOLS: Record<string, { destructive?: boolean; idempotent?: boolean }> = {
+  replace_symbol: { destructive: true, idempotent: true }, // overwrites a body in place
+  memory_delete: { destructive: true, idempotent: true },  // removes a saved fact
+  install_hook: { destructive: true },                     // edits the client's settings.json
+  memory_save: {},                                         // appends a fact
+  digest_save: { idempotent: true },                       // overwrites the stored digest
+  snapshot: {},                                            // copies dirty files into .slimdex/
+  index_repo: { idempotent: true },                        // writes the index cache
+};
+
 function tool(name: string, meta: { title: string; description: string; inputSchema: any }, fn: Handler) {
   // Always registered as a handler, even when the profile hides it from
   // tools/list: `batch` dispatches through this registry, so a lean surface
@@ -212,7 +230,19 @@ function tool(name: string, meta: { title: string; description: string; inputSch
   handlers[name] = fn;
   schemas[name] = z.object(meta.inputSchema);
   if (!advertised(name)) return;
-  server.registerTool(name, meta, async (args: any) => {
+  const effects = SIDE_EFFECT_TOOLS[name];
+  const meta2 = effects
+    ? {
+        ...meta,
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: effects.destructive ?? false,
+          ...(effects.idempotent ? { idempotentHint: true } : {}),
+          openWorldHint: false, // never leaves the indexed repo
+        },
+      }
+    : meta;
+  server.registerTool(name, meta2, async (args: any) => {
     const argObj = (args ?? {}) as Record<string, unknown>;
     // Identical call, unchanged file and index? The body is already in the
     // transcript; point at it rather than paying for it twice. Fails open.
@@ -1896,7 +1926,7 @@ tool(
 
 tool(
   "memory_delete",
-  { title: "Delete a memory fact", description: "Remove one saved memory fact by its id.", inputSchema: { id: z.string() } },
+  { title: "Delete a memory fact", description: "Remove one saved memory fact by its id. Permanent — no undo, and no snapshot is taken.", inputSchema: { id: z.string() } },
   async ({ id }) => {
     // Same serialized cycle as memory_save: a delete racing a save would
     // otherwise write back a fact list that never existed.
