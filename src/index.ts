@@ -59,7 +59,7 @@ function text(s: string) {
   return { content: [{ type: "text" as const, text: s }] };
 }
 
-export const SERVER_VERSION = "0.9.0";
+export const SERVER_VERSION = "1.0.0";
 
 /**
  * Which build is actually answering you.
@@ -201,7 +201,7 @@ const schemas: Record<string, z.ZodTypeAny> = {};
 // how to reach it — most of the guidance above names tools lean does not
 // advertise, and unreachable-in-practice is worse than a few hundred chars.
 const server = new McpServer(
-  { name: "slimdex", version: "0.9.0" },
+  { name: "slimdex", version: SERVER_VERSION },
   { instructions: profile() === "lean" ? INSTRUCTIONS + leanNote() : INSTRUCTIONS }
 );
 

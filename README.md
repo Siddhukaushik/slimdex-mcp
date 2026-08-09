@@ -5,9 +5,14 @@ A local [MCP](https://modelcontextprotocol.io) server that helps coding agents
 asks Slimdex for a specific outline, line range, symbol body, or reference
 list, rather than loading a file to find one thing.
 
-> **Status: pre-1.0.** It works on the repos it has been run
-> against, but it has not been published, packaged, or validated broadly. Read
-> [What's actually verified](#whats-actually-verified) before relying on it.
+```bash
+claude mcp add slimdex -- npx -y slimdex-mcp
+```
+
+> **Status: 1.0.0, on [npm](https://www.npmjs.com/package/slimdex-mcp) and in the
+> [MCP Registry](https://registry.modelcontextprotocol.io).** The savings below are
+> self-measured on the repos it has been run against, not independently validated.
+> Read [What's actually verified](#whats-actually-verified) before relying on it.
 
 | Tool | What it returns |
 |------|-----------------|
@@ -454,7 +459,15 @@ measured results:
 
 ## Install
 
-**Not published to npm.** There is no `npx slimdex-mcp`. Build from source:
+Published on npm as [`slimdex-mcp`](https://www.npmjs.com/package/slimdex-mcp),
+and listed in the [MCP Registry](https://registry.modelcontextprotocol.io) as
+`io.github.Siddhukaushik/slimdex-mcp`. Nothing to build — point your client at:
+
+```bash
+npx slimdex-mcp
+```
+
+Or from source, if you want to hack on it:
 
 ```bash
 git clone https://github.com/Siddhukaushik/slimdex-mcp
@@ -509,6 +522,12 @@ arg).
 are the standard config shape for each client, written from their documented
 format — they are untested here and may need adjustment.
 
+Since 1.0.0 the simplest wiring is `npx -y slimdex-mcp` — no clone, no build, and
+it stays current. The examples below keep the `node <ABS_PATH>` form for anyone
+running from source; to use the published package instead, swap
+`"command": "node", "args": ["<ABS_PATH>"]` for
+`"command": "npx", "args": ["-y", "slimdex-mcp"]`.
+
 Replace `<ABS_PATH>` with your build output, e.g.
 `C:\path\to\slimdex-mcp\dist\index.js`, and `<REPO>` with the repo to index.
 
@@ -521,8 +540,9 @@ tools through `batch`, so it is deliberately not the default.
 
 ### Claude Code (CLI) — tested
 ```bash
-claude mcp add slimdex --env SLIMDEX_ROOT=<REPO> -- node <ABS_PATH>
+claude mcp add slimdex --env SLIMDEX_ROOT=<REPO> -- npx -y slimdex-mcp
 ```
+From source instead: `-- node <ABS_PATH>`.
 
 ### Claude Desktop — tested
 `%APPDATA%\Claude\claude_desktop_config.json`
@@ -530,8 +550,8 @@ claude mcp add slimdex --env SLIMDEX_ROOT=<REPO> -- node <ABS_PATH>
 {
   "mcpServers": {
     "slimdex": {
-      "command": "node",
-      "args": ["<ABS_PATH>"],
+      "command": "npx",
+      "args": ["-y", "slimdex-mcp"],
       "env": { "SLIMDEX_ROOT": "<REPO>" }
     }
   }
