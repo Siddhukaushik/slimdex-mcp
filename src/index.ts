@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
+import type { SymbolDef } from "./symbols.js";
 import { outline, formatOutline } from "./outline.js";
 import { buildOrRefresh, toPosix, underPrefix, containmentError } from "./indexer.js";
 import { searchFiles, formatMatches, encodeCursor, decodeCursor } from "./search.js";
@@ -222,6 +223,34 @@ const SIDE_EFFECT_TOOLS: Record<string, { destructive?: boolean; idempotent?: bo
   snapshot: {},                                            // copies dirty files into .slimdex/
   index_repo: { idempotent: true },                        // writes the index cache
 };
+
+// Guidance placed in a tool DESCRIPTION is read once, at tools/list, and then
+// sits dozens of turns upstream of the decision it is meant to influence. That
+// is why "pull bodies with names:[…]" loses to a reflexive whole-file read: by
+// the time the choice is made, the advice is ancient history. The same sentence
+// appended to the RESULT arrives immediately before the next decision, and is
+// re-read every turn as part of the transcript.
+//
+// Deliberately plain prose. A result dressed up as "[SYSTEM NOTE: …]" would
+// teach the model that in-band text carries out-of-band authority — precisely
+// the habit a hostile MCP server would exploit — so the hint claims no rank it
+// does not have.
+//
+// Named symbols are chosen by widest span, i.e. the bodies a full read would
+// cost the most to reach. Concrete names also keep the line novel per call;
+// identical boilerplate gets habituated and skipped.
+export function widestSymbols(entry: { symbols: SymbolDef[]; lines: number }, n: number): string[] {
+  const top = entry.symbols.filter((s) => !s.depth).sort((a, b) => a.line - b.line);
+  if (top.length === 0) return [];
+  const spans = top.map((s, i) => ({
+    name: s.name,
+    span: (i + 1 < top.length ? top[i + 1].line : entry.lines) - s.line,
+  }));
+  return spans
+    .sort((a, b) => b.span - a.span)
+    .slice(0, n)
+    .map((s) => s.name);
+}
 
 function tool(name: string, meta: { title: string; description: string; inputSchema: any }, fn: Handler) {
   // Always registered as a handler, even when the profile hides it from
@@ -1453,7 +1482,11 @@ tool(
     const truncation = entry.symbolsTruncated
       ? "\n⚠ Symbol index truncated at 2000 declarations; this skeleton is partial."
       : "";
-    return `${rel} skeleton (${entry.lines} lines, ${entry.symbols.length} symbols):${truncation}\n${skel || "  (no declarations detected)"}`;
+    const picks = widestSymbols(entry, 2);
+    const next = picks.length
+      ? `\nNext: get_symbol_context names:[${picks.map((s) => `"${s}"`).join(",")}] — bodies only, not the file.`
+      : "";
+    return `${rel} skeleton (${entry.lines} lines, ${entry.symbols.length} symbols):${truncation}\n${skel || "  (no declarations detected)"}${next}`;
   }
 );
 
@@ -1520,7 +1553,10 @@ tool(
         )
         .join("\n");
       const more = rows.length > shown.length ? `\n  … ${rows.length - shown.length} more file(s); raise top` : "";
-      return `${prefix}: ${rows.length} files, ${totalLines} lines (largest first)\n${body}${more}`;
+      // The largest file is both the likeliest target and the one a full read
+      // would hurt most — so the hint names it rather than describing the step.
+      const next = shown.length ? `\nNext: get_file_skeleton path:"${shown[0][0]}" — signatures, not the file.` : "";
+      return `${prefix}: ${rows.length} files, ${totalLines} lines (largest first)\n${body}${more}${next}`;
     }
 
     const d = depth ?? 2;
