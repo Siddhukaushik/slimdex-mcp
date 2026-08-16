@@ -51,7 +51,7 @@ import { buildPack } from "./pack.js";
 import { staleCovered, formatDigest } from "./digest.js";
 import { hookState, hookNote, runInstaller, type Scope } from "./hookstate.js";
 import { terse, t, fileHeader, countNotice, truncNotice } from "./terse.js";
-import { factFull, formatFactList, PREVIEW_CHARS, SEARCH_PREVIEW_CHARS, SOFT_MAX_FACT_CHARS, HARD_MAX_FACT_CHARS } from "./memfmt.js";
+import { factFull, factPreview, formatFactList, PREVIEW_CHARS, SEARCH_PREVIEW_CHARS, SOFT_MAX_FACT_CHARS, HARD_MAX_FACT_CHARS } from "./memfmt.js";
 import { checkRepeat } from "./dedupe.js";
 import { advertised, profile, leanNote, LEAN_TOOLS } from "./profile.js";
 
@@ -245,6 +245,37 @@ const SIDE_EFFECT_TOOLS: Record<string, { destructive?: boolean; idempotent?: bo
 // gone, not tuned.
 const impactOn = () => process.env.SLIMDEX_IMPACT !== "0";
 
+// SESSION RECALL.
+//
+// `brief` exists precisely to open a session with what earlier ones concluded,
+// and the journal shows sessions opening with repo_map or search_code instead.
+// A tool that must be REMEMBERED cannot fix a problem caused by not
+// remembering — so the recall attaches to whatever the first call turns out to
+// be. The agent does not have to know it exists.
+//
+// Once per process, never repeated: a line the model has already read is pure
+// cost on every later turn. Silent when nothing was ever saved, and silent for
+// the tools that already do this themselves — brief/recap/memory_* would be
+// told what they were about to say.
+let recallServed = false;
+const RECALL_SKIP = new Set(["brief", "recap", "memory_list", "memory_search", "memory_get", "memory_save"]);
+
+async function sessionRecall(tool: string): Promise<string> {
+  if (recallServed || process.env.SLIMDEX_RECALL === "0" || RECALL_SKIP.has(tool)) return "";
+  recallServed = true; // set before the await: two calls racing in must not both pay
+  try {
+    const mem = await loadMemory(ROOT);
+    const facts = [...(mem.facts ?? [])].sort((a, b) => (a.created < b.created ? 1 : -1)).slice(0, 3);
+    if (facts.length === 0) return "";
+    const lines = facts.map((f) => `  ${factPreview(f, 90)}`).join("\n");
+    // Previews, not bodies: the point is to answer "has this been looked at
+    // before" in one glance, and hand back an id for the one that matters.
+    return `\n\nPrior sessions concluded (${mem.facts.length} saved; memory_get id / memory_search q):\n${lines}`;
+  } catch {
+    return ""; // recall is a courtesy; it must never break the call it rode in on
+  }
+}
+
 export function widestSymbols(entry: { symbols: SymbolDef[]; lines: number }, n: number): string[] {
   const top = entry.symbols.filter((s) => !s.depth).sort((a, b) => a.line - b.line);
   if (top.length === 0) return [];
@@ -285,7 +316,7 @@ function tool(name: string, meta: { title: string; description: string; inputSch
     if (repeat.notice) {
       void record(ROOT, name, repeat.notice.length, false);
       void journalRecord(ROOT, name, args);
-      return text(repeat.notice);
+      return text(repeat.notice + (await sessionRecall(name)));
     }
 
     let out: string;
@@ -302,7 +333,7 @@ function tool(name: string, meta: { title: string; description: string; inputSch
     // context". Recording here too would double-count the same chars.
     if (name !== "batch") void record(ROOT, name, out.length, failed);
     void journalRecord(ROOT, name, args); // automatic continuity breadcrumb; never throws
-    return text(out);
+    return text(out + (await sessionRecall(name)));
   });
 }
 
@@ -2099,6 +2130,45 @@ function installShutdownHooks(transport: StdioServerTransport): void {
     sdkOnClose?.();
   };
 }
+
+// ---- prompts: the SOP channel, which `instructions` cannot be ----
+//
+// The server `instructions` block is capped in practice — clients truncate
+// around 2,000 chars, and slimdex already sends ~1,560. Anything appended there
+// silently deletes the tail, which is where the memory and editing rules live.
+// A prompt has no such budget, costs nothing per turn (it is fetched only when
+// the user invokes it), and is the primitive actually designed for "run this
+// workflow" — unlike a tool, which the model must choose, or instructions,
+// which it read forty turns ago.
+//
+// User-invoked by design: this cannot fix an agent mid-session, and pretending
+// otherwise would be the same mistake as expecting `brief` to be called.
+server.registerPrompt(
+  "slimdex_start",
+  {
+    title: "Start a slimdex session",
+    description: "Open work on an issue with the retrieval lifecycle: recall, locate, impact, edit narrowly, save.",
+    argsSchema: { issue: z.string().describe("The bug, feature, or question to work on.") },
+  },
+  ({ issue }) => ({
+    messages: [
+      {
+        role: "user" as const,
+        content: {
+          type: "text" as const,
+          text:
+            `Work on: ${issue}\n\n` +
+            `Use slimdex, in this order:\n` +
+            `1. memory_search "${issue}" — a previous session may have concluded this already. If it did, start from that.\n` +
+            `2. search_intent or repo_map -> get_file_skeleton to locate the code. Do not read whole files.\n` +
+            `3. get_symbol_context on the target. Its Impact line reports dependents and covering tests — read it before changing anything.\n` +
+            `4. replace_symbol to edit by name. If Impact listed dependents, check whether they need the same change.\n` +
+            `5. memory_save the conclusion, in one sentence, the moment it is confirmed — not at the end.`,
+        },
+      },
+    ],
+  })
+);
 
 async function main() {
   const transport = new StdioServerTransport();
