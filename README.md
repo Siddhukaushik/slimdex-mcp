@@ -23,7 +23,7 @@ claude mcp add slimdex -- npx -y slimdex-mcp
 (one 6,200-line file, explored through a skeleton and 12 symbol bodies instead
 of four full reads).
 
-> **Status: 1.0.1, on [npm](https://www.npmjs.com/package/slimdex-mcp) and in the
+> **Status: 1.1.0, on [npm](https://www.npmjs.com/package/slimdex-mcp) and in the
 > [MCP Registry](https://registry.modelcontextprotocol.io).** Those numbers are
 > self-measured on the repos it has been run against, single sessions, not
 > independently validated — and `stats` counts characters, not tokens.

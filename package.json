@@ -1,6 +1,6 @@
 {
   "name": "slimdex-mcp",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "mcpName": "io.github.Siddhukaushik/slimdex-mcp",
   "description": "A local MCP server for narrow code retrieval: outlines, symbol context, a dependency graph, and persistent memory instead of whole-file reads.",
   "type": "module",
@@ -22,6 +22,7 @@
     "slimdex-mcp": "dist/index.js"
   },
   "files": [
+    "CHANGELOG.md",
     "LICENSE",
     "README.md",
     "dist",
