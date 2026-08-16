@@ -19,6 +19,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
 import type { SymbolDef } from "./symbols.js";
+import { symbolImpact, impactLine } from "./impact.js";
 import { outline, formatOutline } from "./outline.js";
 import { buildOrRefresh, toPosix, underPrefix, containmentError } from "./indexer.js";
 import { searchFiles, formatMatches, encodeCursor, decodeCursor } from "./search.js";
@@ -239,6 +240,11 @@ const SIDE_EFFECT_TOOLS: Record<string, { destructive?: boolean; idempotent?: bo
 // Named symbols are chosen by widest span, i.e. the bodies a full read would
 // cost the most to reach. Concrete names also keep the line novel per call;
 // identical boilerplate gets habituated and skipped.
+// The impact line costs one bounded scan on calls that previously touched no
+// graph. Off switch rather than a setting: a repo where it is too slow wants it
+// gone, not tuned.
+const impactOn = () => process.env.SLIMDEX_IMPACT !== "0";
+
 export function widestSymbols(entry: { symbols: SymbolDef[]; lines: number }, n: number): string[] {
   const top = entry.symbols.filter((s) => !s.depth).sort((a, b) => a.line - b.line);
   if (top.length === 0) return [];
@@ -887,7 +893,12 @@ tool(
     // re-parsing in a loop against a moving target returns torn code.
     let staleRetried = false;
 
-    const one = async (sym: string | undefined, fp: string | undefined, ln: number | undefined): Promise<string> => {
+    const one = async (
+      sym: string | undefined,
+      fp: string | undefined,
+      ln: number | undefined,
+      withImpact = false
+    ): Promise<string> => {
       let file: string, defLine: number, kind = "symbol";
       if (fp && ln) {
         file = toPosix(path.relative(ROOT, await safeResolve(fp)));
@@ -964,7 +975,13 @@ tool(
       // Self-verifying: warn (only) when this file changed since indexing, so
       // the agent knows the located line may be off without re-reading to check.
       const fresh = await stalenessNote(ROOT, file, index.files[file]?.mtimeMs ?? Infinity);
-      return `${ctx.file}:${ctx.line}  ${ctx.kind}  (${ctx.loc} LOC)\n${ctx.text}${fresh}`;
+      // This is the call made immediately before an edit, so it is where blast
+      // radius is worth knowing — and the one place it can be delivered without
+      // the agent having to decide to ask for it. One scan, single symbols only:
+      // a names:[…] batch would multiply the cost across bodies that are being
+      // skimmed, not edited.
+      const imp = withImpact && sym && impactOn() ? impactLine(await symbolImpact(ROOT, index, sym, file)) : "";
+      return `${ctx.file}:${ctx.line}  ${ctx.kind}  (${ctx.loc} LOC)\n${ctx.text}${fresh}${imp}`;
     };
 
     // Several bodies in one round-trip. A miss or an ambiguity reports inline
@@ -974,7 +991,7 @@ tool(
       for (const n of names) parts.push(await one(n, undefined, undefined));
       return parts.join("\n\n");
     }
-    return one(name, p, line);
+    return one(name, p, line, true);
   }
 );
 
@@ -1160,10 +1177,16 @@ tool(
       : stillThere
         ? "re-indexed, a symbol is present in the new range"
         : "⚠ re-indexed but no symbol parsed in the new range — check the body is a valid declaration";
+    // Reported AFTER the write, not as a precondition for it. The agent's next
+    // move is either "done" or "update the call sites", and this is the last
+    // thing it reads before deciding — which is the only moment the graph
+    // changes an outcome. Refusing the write instead would just route the edit
+    // to the built-in Edit tool, where nothing is measured and nothing is said.
+    const imp = name && impactOn() ? impactLine(await symbolImpact(ROOT, fresh, name, file)) : "";
     return (
       `Replaced ${name ?? `${file}:${defLine}`}: lines ${res.oldStart}-${res.oldEnd} → ${res.oldStart}-${res.newEnd} ` +
       `(${res.oldEnd - res.oldStart + 1} line(s) removed, ${res.newEnd - res.oldStart + 1} written). ` +
-      `${snapNote}; ${parseNote}${droppedNote(dropped)}.`
+      `${snapNote}; ${parseNote}${droppedNote(dropped)}.${imp}`
     );
   }
 );
