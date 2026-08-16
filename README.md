@@ -1,17 +1,32 @@
 # slimdex-mcp
 
-A local [MCP](https://modelcontextprotocol.io) server that helps coding agents
-**retrieve code narrowly** instead of reading whole files into context. An agent
-asks Slimdex for a specific outline, line range, symbol body, or reference
-list, rather than loading a file to find one thing.
+[![npm](https://img.shields.io/npm/v/slimdex-mcp?color=cb3837&logo=npm)](https://www.npmjs.com/package/slimdex-mcp)
+[![MCP Registry](https://img.shields.io/badge/MCP%20Registry-listed-0a7ea4)](https://registry.modelcontextprotocol.io)
+[![Glama score](https://glama.ai/mcp/servers/Siddhukaushik/slimdex-mcp/badges/score.svg)](https://glama.ai/mcp/servers/Siddhukaushik/slimdex-mcp)
+[![license](https://img.shields.io/npm/l/slimdex-mcp)](LICENSE)
+
+**Your agent reads a 900-line file to change one function — then pays for that
+file again on every turn that follows.** The whole conversation is re-sent each
+time, so an early read isn't a one-time cost. It's rent.
+
+Slimdex is a local [MCP](https://modelcontextprotocol.io) server that gives
+coding agents **narrow retrieval** instead: a file's outline, one symbol's body,
+who calls it, what breaks if it changes — and memory that survives the session,
+so the next chat starts informed rather than re-deriving the repo from zero.
 
 ```bash
 claude mcp add slimdex -- npx -y slimdex-mcp
 ```
 
-> **Status: 1.0.0, on [npm](https://www.npmjs.com/package/slimdex-mcp) and in the
-> [MCP Registry](https://registry.modelcontextprotocol.io).** The savings below are
-> self-measured on the repos it has been run against, not independently validated.
+**~50% fewer tokens** in day-to-day use — ~55–60% on navigation-heavy work,
+~45% on output-heavy work, and 85–90% on the worst case it was built for
+(one 6,200-line file, explored through a skeleton and 12 symbol bodies instead
+of four full reads).
+
+> **Status: 1.0.1, on [npm](https://www.npmjs.com/package/slimdex-mcp) and in the
+> [MCP Registry](https://registry.modelcontextprotocol.io).** Those numbers are
+> self-measured on the repos it has been run against, single sessions, not
+> independently validated — and `stats` counts characters, not tokens.
 > Read [What's actually verified](#whats-actually-verified) before relying on it.
 
 | Tool | What it returns |
