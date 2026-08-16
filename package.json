@@ -40,7 +40,8 @@
     "audit": "node scripts/audit-coverage.mjs",
     "pretest": "npm run build",
     "audit:corpus": "npm run build && node scripts/corpus-audit.mjs",
-    "install-hook": "node scripts/install-hook.mjs"
+    "install-hook": "node scripts/install-hook.mjs",
+    "gravity": "node scripts/gravity-report.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",

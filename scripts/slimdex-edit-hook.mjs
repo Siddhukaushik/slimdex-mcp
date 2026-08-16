@@ -277,6 +277,24 @@ try {
     journal(cwd, { trace: true, tool: hook.tool_name, inputKeys: Object.keys(input) });
   }
 
+  // GRAVITY LEDGER. Everything else in this file only records the calls it
+  // decides to argue with, which answers "did the nudge fire" but not the
+  // question that actually matters: when the model reached for code, did it
+  // reach here or for a built-in?
+  //
+  // This hook is the only vantage point that can see a built-in call at all —
+  // the server never learns about a `Read`. Paired with .slimdex/journal.json
+  // (which records slimdex's own calls), the two together reconstruct the full
+  // sequence, and scripts/gravity-report.mjs turns that into a first-hop rate.
+  //
+  // Recorded unconditionally, because a measurement you must remember to switch
+  // on measures the sessions you were paying attention to. Set
+  // SLIMDEX_GRAVITY=0 to opt out; the journal is size-capped either way.
+  if (process.env.SLIMDEX_GRAVITY !== "0") {
+    const kind = EDIT_TOOLS.has(tool) ? "edit" : WRITE_TOOLS.has(tool) ? "write" : READ_TOOLS.has(tool) ? "read" : null;
+    if (kind) journal(cwd, { g: kind, tool, file: file ? path.basename(file) : undefined });
+  }
+
   if (EDIT_TOOLS.has(tool)) {
     // MultiEdit carries an array; judge it by its largest single replacement,
     // since that is the one that would have been a replace_symbol.
