@@ -289,6 +289,50 @@ export function widestSymbols(entry: { symbols: SymbolDef[]; lines: number }, n:
     .map((s) => s.name);
 }
 
+// Every result ends with a concrete follow-on. Tool descriptions explain a
+// tool before it is chosen; this points to the next narrowest action while the
+// result is still in view. Keep these short: they are transcript content.
+const NEXT_STEP_HINTS: Record<string, string> = {
+  index_repo: "Next: orient with repo_map, or locate the task directly with search_intent.",
+  snapshot: "Next: continue safely; run changed_files to review the working-tree blast radius.",
+  outline_file: "Next: use read_lines on a declaration's range, or get_file_skeleton for bodies elided.",
+  read_lines: "Next: use get_symbol_context for the enclosing symbol instead of expanding the file.",
+  search_code: "Next: inspect a promising match with read_lines or get_symbol_context.",
+  find_definition: "Next: use get_symbol_context on the definition to inspect its bounded body.",
+  search_symbols: "Next: use get_symbol_context on the best match, or find_definition to disambiguate it.",
+  find_references: "Next: use find_tests before changing the symbol, or get_symbol_context on a caller.",
+  find_tests: "Next: inspect the target with get_symbol_context, then run the listed tests after editing.",
+  search_intent: "Next: inspect the strongest match with get_symbol_context, or context_pack for the whole area.",
+  context_pack: "Next: use get_symbol_context or read_lines only for the exact detail still missing.",
+  get_symbol_context: "Next: use find_tests before editing, or dep_graph when this symbol's file is shared.",
+  replace_symbol: "Next: run the covering tests named by find_tests and save any durable conclusion with memory_save.",
+  get_file_skeleton: "Next: pull the needed bodies with get_symbol_context names:[…], not a whole-file read.",
+  get_context: "Next: inspect the body only if needed, then use find_tests before changing the symbol.",
+  repo_map: "Next: drill into a directory or use get_file_skeleton on a promising file.",
+  changed_files: "Next: inspect the touched symbols with get_symbol_context and their tests with find_tests.",
+  dep_graph: "Next: inspect the affected symbol or its covering tests before changing shared code.",
+  stats: "Next: use the largest response source to tighten limits or switch to a narrower retrieval tool.",
+  memory_save: "Next: continue from the saved conclusion; memory_search can retrieve it in a later session.",
+  memory_search: "Next: use memory_get ids:[…] only for the relevant full fact, then verify it against live code.",
+  recap: "Next: use brief for the combined, freshness-checked session opener, or inspect the reported focus area.",
+  brief: "Next: use search_intent or repo_map to locate the current task without reading whole files.",
+  install_hook: "Next: restart the chat session so the hook is loaded before the next edit or large read.",
+  digest_save: "Next: use digest_get in future sessions to retrieve this architecture summary with freshness checks.",
+  digest_get: "Next: verify any stale area with narrow retrieval, then refresh the digest with digest_save.",
+  memory_list: "Next: use memory_get ids:[…] for one relevant fact, or memory_search to narrow the list.",
+  memory_get: "Next: verify the recalled conclusion against live code, then update it with memory_save if needed.",
+  memory_delete: "Next: continue with the remaining current facts; use memory_list to review them cheaply.",
+  batch: "Next: follow the most relevant returned result with its named narrow retrieval tool.",
+};
+
+export function nextStepHint(tool: string): string {
+  return NEXT_STEP_HINTS[tool] ?? "Next: choose the narrowest tool that answers the remaining question.";
+}
+
+export function withNextStepHint(tool: string, output: string): string {
+  return /(?:^|\n)Next:/.test(output) ? output : `${output}\n${nextStepHint(tool)}`;
+}
+
 function tool(name: string, meta: { title: string; description: string; inputSchema: any }, fn: Handler) {
   // Always registered as a handler, even when the profile hides it from
   // tools/list: `batch` dispatches through this registry, so a lean surface
@@ -316,7 +360,7 @@ function tool(name: string, meta: { title: string; description: string; inputSch
     if (repeat.notice) {
       void record(ROOT, name, repeat.notice.length, false);
       void journalRecord(ROOT, name, args);
-      return text(repeat.notice + (await sessionRecall(name)));
+      return text(withNextStepHint(name, repeat.notice + (await sessionRecall(name))));
     }
 
     let out: string;
@@ -333,7 +377,7 @@ function tool(name: string, meta: { title: string; description: string; inputSch
     // context". Recording here too would double-count the same chars.
     if (name !== "batch") void record(ROOT, name, out.length, failed);
     void journalRecord(ROOT, name, args); // automatic continuity breadcrumb; never throws
-    return text(out + (await sessionRecall(name)));
+    return text(withNextStepHint(name, out + (await sessionRecall(name))));
   });
 }
 
@@ -2068,8 +2112,9 @@ tool(
         }
         const args = parsed.data;
         const repeat = await checkRepeat(ROOT, c.tool, args);
-        const body = repeat.notice ?? (await handlers[c.tool](args));
-        if (!repeat.notice) repeat.remember?.(body);
+        const rawBody = repeat.notice ?? (await handlers[c.tool](args));
+        if (!repeat.notice) repeat.remember?.(rawBody);
+        const body = withNextStepHint(c.tool, rawBody);
         parts.push(`### ${c.tool} ${JSON.stringify(args)}\n${body}`);
         subChars += body.length;
         void record(ROOT, c.tool, body.length, false);
