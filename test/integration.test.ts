@@ -199,6 +199,12 @@ describe.skipIf(!built)("MCP server end to end", () => {
     expect(out).toContain("export function add");
   });
 
+  it("adds a follow-on recommendation to direct and batched tool results", async () => {
+    expect(await call("find_definition", { name: "add" })).toContain("Next: use get_symbol_context");
+    const out = await call("batch", { calls: [{ tool: "find_definition", args: { name: "add" } }] });
+    expect(out).toContain("Next: use get_symbol_context");
+  });
+
   it("batch validates each sub-call against the tool schema", async () => {
     const out = await call("batch", { calls: [{ tool: "search_code", args: { query: "return" } }] });
     expect(out).toMatch(/invalid arguments.*pattern/i);
