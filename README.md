@@ -34,7 +34,7 @@ of four full reads).
 | `index_repo` | Builds/refreshes a persistent symbol + import index; only changed files re-parse |
 | `outline_file` | Declarations of one file with line numbers |
 | `get_file_skeleton` | Signatures with bodies elided, nesting preserved |
-| `read_lines` | One line range |
+| `read_lines` | One line range, capped at 6,000 characters by default with a continuation line; set `maxChars` when more is needed |
 | `get_symbol_context` | One function/class body ±2 lines, capped by `maxLines`; `names:[...]` pulls several bodies in one call |
 | `search_code` | `path:line:col` + the matching line with caret highlight; `limit`/`offset`/cursor pagination |
 | `find_definition` | Definition site(s) of a symbol as `path:line:col` |
@@ -48,10 +48,10 @@ of four full reads).
 | `repo_map` | Dir-level file/line/symbol counts; `path:` drills into a dir's largest files |
 | `changed_files` | Changed files + which symbols each hunk lands in |
 | `dep_graph` | `imports` / `dependents` / a Mermaid diagram (`root`+`depth` BFS) |
-| `stats` | Per-tool call counts and response sizes, in characters, plus read follow-through and write discipline |
+| `stats` | Per-tool call counts and response sizes, in characters, plus read mix and write discipline |
 | `batch` | Runs several calls in one request |
 | `recap` | Prior sessions' activity, reconstructed automatically from the server's tool-call journal — works even when nothing was saved |
-| `brief` | One-shot session opener: repo summary + journal-derived focus + saved conclusions checked against the live index (✓ live / ⚠ maybe stale) |
+| `brief` | Compact session opener: repo summary + journal-derived focus + recent conclusions checked against the live index (✓ live / ⚠ maybe stale); `detail:"full"` expands the recap and memory previews |
 | `digest_save` / `digest_get` | Store a compact repo architecture cheat-sheet once; read it back with a per-covered-file freshness verdict, so the next session skips re-exploring |
 | `snapshot` | Copies uncommitted files into `.slimdex/snapshots/` (also auto-runs hourly via `index_repo` on a dirty tree) — insurance against accidental resets, not a substitute for committing |
 | `memory_save/search/list/delete` | Durable notes in `.slimdex/memory.json` |
@@ -159,7 +159,7 @@ costs roughly 4–5× input, so an undisciplined edit wastes more than an
 undisciplined read: rewriting a whole function through a generic edit tool means
 re-sending the entire old body purely so the tool can locate it. `replace_symbol`
 addresses by name and that cost disappears. `stats` reports this alongside
-follow-through, because the leak is otherwise invisible — the expensive path
+read mix, because the leak is otherwise invisible — the expensive path
 still produces a correct edit, so nothing signals that you overpaid:
 
 ```

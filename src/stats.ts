@@ -26,9 +26,8 @@ export interface ToolStat {
 /**
  * The write side of the discipline, which nothing measured.
  *
- * `follow-through` worked because it turned an invisible overpayment into a
- * number: skeletons that were never followed by a narrow read show up as a low
- * ratio, and you cannot argue with your own transcript. There was no equivalent
+ * Read mix made retrieval volume visible, though it cannot prove per-file
+ * follow-through. There was no equivalent
  * for editing, and the cost of that showed up in a real session — dozens of
  * whole-symbol rewrites sent through a generic edit tool (which has to be handed
  * the old body just to locate the change), three hand-rolled line splices, and a
@@ -415,29 +414,26 @@ export function formatStats(s: StatsFile, bypass?: BypassStat): string {
         (t.errors ? `  (${t.errors} err)` : "")
     )
     .join("\n");
-  // Follow-through: a skeleton is an *investment* that only pays off if the
-  // bodies it located are then read narrowly. Skeletons followed by whole-file
-  // reads (which happen client-side, invisible to us) show up here as a low
-  // ratio — the one number that says whether the retrieval discipline held.
+  // These are independent totals. We cannot infer that a narrow read used
+  // a preceding skeleton, or see whole-file reads made outside slimdex.
   const skeletons = s.tools["get_file_skeleton"]?.calls ?? 0;
   const narrow = (s.tools["get_symbol_context"]?.calls ?? 0) + (s.tools["read_lines"]?.calls ?? 0);
-  const followThrough =
+  const readMix =
     skeletons > 0
-      ? `\nfollow-through: ${skeletons} skeleton(s) → ${narrow} narrow read(s) (get_symbol_context + read_lines).` +
-        (narrow < skeletons ? ` Low — bodies were likely read as whole files outside slimdex; that forfeits the saving.` : ``)
+      ? `\nread mix: ${skeletons} skeleton call(s); ${narrow} narrow-read call(s) (get_symbol_context + read_lines). These counts do not establish per-file follow-through.`
       : ``;
   return (
     `slimdex usage since ${s.since}\n${body}\n` +
     `  ${"TOTAL".padEnd(20)} ${String(totalCalls).padStart(5)} calls  ${String(total).padStart(9)} chars\n` +
     `(chars, not tokens — see stats.ts for why)` +
-    followThrough +
+    readMix +
     formatWrite(s.write, { writeSince: s.writeSince, since: s.since }, bypass) +
     formatUnused(s)
   );
 }
 
 /**
- * The write-side companion to follow-through.
+ * The write-side companion to read mix.
  *
  * Deliberately reports counts and one verdict line, not a lecture. The failure
  * this exists to catch is not an agent that disagrees with the rules — it is one

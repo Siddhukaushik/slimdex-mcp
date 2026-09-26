@@ -275,7 +275,7 @@ describe.skipIf(!built)("MCP server end to end", () => {
   it("stats reports skeleton follow-through once skeletons were called", async () => {
     await call("get_file_skeleton", { path: "src/math.ts" });
     const out = await call("stats");
-    expect(out).toMatch(/follow-through: \d+ skeleton/);
+    expect(out).toMatch(/read mix: \d+ skeleton/);
   });
 
   // ---- test linkage, onboarding brief, and the write side ----
