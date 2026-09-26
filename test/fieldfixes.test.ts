@@ -191,6 +191,6 @@ describe.skipIf(!built)("field fixes over the wire", () => {
       arguments: { calls: [{ tool: "get_file_skeleton", args: { path: "src/portfolio.ts" } }] },
     });
     const s = await call("stats");
-    expect(s).toMatch(/follow-through: 1 skeleton/);
+    expect(s).toMatch(/read mix: 1 skeleton/);
   });
 });

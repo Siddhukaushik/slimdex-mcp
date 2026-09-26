@@ -59,6 +59,8 @@ export interface BriefInput {
   root: string;
   /** Version + build time of the running server, so a stale process is visible. */
   build?: string;
+  /** Full includes the complete recap and up to eight memory previews. */
+  detail?: "compact" | "full";
 }
 
 /** Extensions whose real behaviour is decided by the rendered page, not the source. */
@@ -92,7 +94,7 @@ export function blindSpots(byExt: Map<string, number>, fileCount: number): strin
 }
 
 /** Compose the human-readable brief. Pure over its inputs for testability. */
-export function composeBrief({ index, facts, recap, root, build }: BriefInput): string {
+export function composeBrief({ index, facts, recap, root, build, detail = "compact" }: BriefInput): string {
   const files = Object.entries(index.files);
   const fileCount = files.length;
   const symCount = files.reduce((n, [, f]) => n + f.symbols.length, 0);
@@ -118,23 +120,31 @@ export function composeBrief({ index, facts, recap, root, build }: BriefInput): 
   lines.push(`  Repo: ${fileCount} indexed file(s), ${symCount} symbol(s). Languages: ${langs || "n/a"}.`);
   lines.push(`  ${blindSpots(byExt, fileCount)}`);
   lines.push("");
-  lines.push(recap.trim());
+  if (detail === "full") {
+    lines.push(recap.trim());
+  } else {
+    const recapLines = recap.trim().split("\n");
+    lines.push(recapLines[0]);
+    const filesLine = recapLines.find((line) => line.includes("files examined:"));
+    if (filesLine) lines.push(filesLine.split(", ").slice(0, 4).join(", "));
+  }
   lines.push("");
 
   if (!facts.length) {
     lines.push("Saved conclusions: none yet. Use memory_save when you confirm something worth keeping.");
   } else {
     lines.push("Saved conclusions (newest first, checked against the current index):");
-    const shown = [...facts].reverse().slice(0, 8);
+      const shown = [...facts].reverse().slice(0, detail === "full" ? 8 : 3);
     for (const f of shown) {
       const st = checkStaleness(f, liveFiles, liveSymbols);
       const mark = st.flag === "ok" ? " ✓" : st.flag === "stale" ? " ⚠" : "";
       const suffix = st.flag === "stale" ? `  (stale? ${st.note})` : "";
       const tags = f.tags.length ? `(${f.tags.join(",")}) ` : "";
-      lines.push(`  [${f.id}]${mark} ${tags}${f.text.slice(0, 160)}${f.text.length > 160 ? "…" : ""}${suffix}`);
+        const preview = detail === "full" ? 160 : 110;
+        lines.push(`  [${f.id}]${mark} ${tags}${f.text.slice(0, preview)}${f.text.length > preview ? "…" : ""}${suffix}`);
     }
     const more = facts.length - shown.length;
-    if (more > 0) lines.push(`  … ${more} older fact(s); memory_list for the rest.`);
+      if (more > 0) lines.push(`  … ${more} older fact(s); use brief detail:"full" or memory_search for more.`);
     lines.push("");
     lines.push("✓ = still references live code · ⚠ = may be stale, verify before trusting.");
   }

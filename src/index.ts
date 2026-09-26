@@ -54,6 +54,7 @@ import { terse, t, fileHeader, countNotice, truncNotice } from "./terse.js";
 import { factFull, factPreview, formatFactList, PREVIEW_CHARS, SEARCH_PREVIEW_CHARS, SOFT_MAX_FACT_CHARS, HARD_MAX_FACT_CHARS } from "./memfmt.js";
 import { checkRepeat } from "./dedupe.js";
 import { advertised, profile, leanNote, LEAN_TOOLS } from "./profile.js";
+import { boundedLines } from "./line-budget.js";
 
 const ROOT = path.resolve(process.env.SLIMDEX_ROOT || process.argv[2] || process.cwd());
 
@@ -487,16 +488,17 @@ tool(
   "read_lines",
   {
     title: "Read a line range",
-    description: "Read only lines [start..end] (1-indexed, inclusive) of a file. Cheaper than the whole file.",
-    inputSchema: { path: z.string(), start: z.number().int().min(1), end: z.number().int().min(1) },
-  },
-  async ({ path: p, start, end }) => {
+      description: "Read lines [start..end] with a 6000-character default cap. If truncated, resume at the reported next line; maxChars raises the cap.",
+      inputSchema: { path: z.string(), start: z.number().int().min(1), end: z.number().int().min(1), maxChars: z.number().int().min(100).max(100000).optional() },
+    },
+    async ({ path: p, start, end, maxChars }) => {
     const abs = await safeResolve(p);
     const lines = (await readFileCached(abs)).split(/\r?\n/);
     const s = Math.max(1, start);
     const e = Math.min(lines.length, Math.max(s, end));
-    const body = lines.slice(s - 1, e).map((l, i) => `${String(s + i).padStart(5)}  ${l}`).join("\n");
-    return `${fileHeader(toPosix(path.relative(ROOT, abs)), s, e, lines.length)}\n${body}`;
+      const range = boundedLines(lines, s, e, maxChars);
+      const continuation = range.next ? `\n… truncated at ${maxChars ?? 6000} chars; continue with start:${range.next}, end:${e}.` : "";
+      return `${fileHeader(toPosix(path.relative(ROOT, abs)), s, range.last, lines.length)}\n${range.body}${continuation}`;
   }
 );
 
@@ -1876,14 +1878,14 @@ tool(
     title: "One-shot session onboarding brief",
     description:
       "CALL THIS FIRST in a fresh chat — including on a repo slimdex has never seen, where it builds the index itself " +
-      "rather than sending you to index_repo. One synthesized opener instead of stitching memory_list + recap yourself: what " +
-      "the repo is, where recent sessions were digging (automatic journal), and each saved conclusion CHECKED against the " +
-      "current index so stale ones are flagged (✓ live, ⚠ may be stale).",
-    inputSchema: {
-      limit: z.number().int().min(1).max(400).optional().describe("Journaled calls to summarize for the focus section (default 200)."),
+      "rather than sending you to index_repo. A compact opener with repo summary, recent journal focus and checked memory " +
+      "previews (✓ live, ⚠ may be stale). Use detail:'full' for the complete recap and more memory previews.",
+      inputSchema: {
+        limit: z.number().int().min(1).max(400).optional().describe("Journaled calls to summarize for the focus section (default 200)."),
+        detail: z.enum(["compact", "full"]).optional().describe("Compact by default; full shows the complete recap and more memory previews."),
+      },
     },
-  },
-  async ({ limit }) => {
+    async ({ limit, detail }) => {
     let index = await loadIndex(ROOT);
     // brief is documented as the FIRST call of every session, so "run
     // index_repo first, then brief" made the documented opening move a
@@ -1927,7 +1929,7 @@ tool(
     // the server cannot put it — so the one thing it CAN do is notice it is
     // missing, at the one moment the whole session is being oriented.
     const hooks = hookNote(await hookState(ROOT));
-    return coldStart + composeBrief({ index, facts: mem.facts, recap, root: ROOT, build: buildStamp() }) + freshLine + hooks;
+      return coldStart + composeBrief({ index, facts: mem.facts, recap, root: ROOT, build: buildStamp(), detail }) + freshLine + hooks;
   }
 );
 
